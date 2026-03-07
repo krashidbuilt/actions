@@ -573,10 +573,7 @@ describe("versioning run", () => {
       expect(mockSetOutput).toHaveBeenCalledWith("bump_type", "patch");
       expect(mockSetOutput).toHaveBeenCalledWith("tag", "v1.0.1");
       expect(mockSetOutput).toHaveBeenCalledWith("is_prerelease", "false");
-      expect(mockSetOutput).toHaveBeenCalledWith(
-        "release_url",
-        "https://github.com/krashidbuilt/ctrl/releases/v1.0.1",
-      );
+      expect(mockSetOutput).toHaveBeenCalledWith("release_url", "https://github.com/krashidbuilt/ctrl/releases/v1.0.1");
     });
 
     it("skips version bump when no commits found", async () => {
@@ -1174,10 +1171,7 @@ describe("versioning run", () => {
           prerelease: false,
         }),
       );
-      expect(mockSetOutput).toHaveBeenCalledWith(
-        "release_url",
-        "https://github.com/krashidbuilt/ctrl/releases/v1.0.1",
-      );
+      expect(mockSetOutput).toHaveBeenCalledWith("release_url", "https://github.com/krashidbuilt/ctrl/releases/v1.0.1");
     });
 
     it("updates an existing release", async () => {

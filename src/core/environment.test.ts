@@ -133,6 +133,12 @@ describe("getDomain", () => {
   it("returns beta subdomain for beta", () => {
     expect(getDomain("beta")).toBe("beta.krashidbuilt.com");
   });
+
+  it("uses custom domain when provided", () => {
+    expect(getDomain("production", "kauffman.ai")).toBe("kauffman.ai");
+    expect(getDomain("alpha", "kauffman.ai")).toBe("alpha.kauffman.ai");
+    expect(getDomain("beta", "kauffman.ai")).toBe("beta.kauffman.ai");
+  });
 });
 
 describe("getProfile", () => {

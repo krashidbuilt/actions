@@ -47,6 +47,7 @@ export interface FrontendDeployInputs {
   workingDirectory: string;
   awsRegion: string;
   githubToken: string;
+  domain?: string;
   appName?: string;
   version?: string;
   invalidateCache: boolean;
@@ -69,6 +70,7 @@ export function getInputs(): FrontendDeployInputs {
     workingDirectory: common.workingDirectory(),
     awsRegion: aws.region(),
     githubToken: common.githubToken(),
+    domain: core.getInput("domain") || undefined,
     appName: core.getInput("app_name") || undefined,
     version: core.getInput("version") || undefined,
     invalidateCache: core.getInput("invalidate_cache") === "true",
@@ -119,7 +121,7 @@ export async function run(): Promise<void> {
     // Set outputs
     core.setOutput("environment", environment);
     core.setOutput("version", version);
-    core.setOutput("url", `https://${appName}.${getDomain(environment)}`);
+    core.setOutput("url", `https://${appName}.${getDomain(environment, inputs.domain)}`);
 
     // Step 1: Find artifact bucket
     logger.info("Finding artifact bucket...");
@@ -128,7 +130,7 @@ export async function run(): Promise<void> {
 
     // Step 2: Find application bucket
     logger.info("Finding application bucket...");
-    const applicationBucket = await findApplicationBucket(appName, environment);
+    const applicationBucket = await findApplicationBucket(appName, environment, inputs.domain);
     logger.info(`Application bucket: ${applicationBucket}`);
 
     // Step 3: Upload to artifact bucket (versioned archive)

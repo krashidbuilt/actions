@@ -20,6 +20,9 @@ inputs:
     default: "us-east-1"
   github_token:
     description: "GitHub token"
+  domain:
+    description: "Domain for bucket resolution (defaults to krashidbuilt.com)"
+    default: "krashidbuilt.com"
   app_name:
     description: "Application name (auto-detected from package.json if not set)"
   version:

@@ -41,10 +41,14 @@ export async function findArtifactBucket(): Promise<string> {
  * Bucket naming: {app}.{domain} where domain is environment-aware
  * (e.g., ctrl.alpha.krashidbuilt.com, ctrl.krashidbuilt.com)
  */
-export async function findApplicationBucket(appName: string, environment: Environment): Promise<string> {
-  const domain = getDomain(environment);
+export async function findApplicationBucket(
+  appName: string,
+  environment: Environment,
+  domain?: string,
+): Promise<string> {
+  const resolvedDomain = getDomain(environment, domain);
   const appNameFirstPart = appName.split(".")[0];
-  const applicationBucket = `${appNameFirstPart}.${domain}`;
+  const applicationBucket = `${appNameFirstPart}.${resolvedDomain}`;
 
   const output = await awsCli(["s3", "ls"]);
   const buckets = output.split("\n").map((line) => line.split(" ").pop() || "");

@@ -105,15 +105,18 @@ export function getEnvironmentFromInputs(): Environment {
  * alpha -> alpha.krashidbuilt.com
  * beta -> beta.krashidbuilt.com
  * production -> krashidbuilt.com
+ *
+ * When a custom domain is provided, it is used instead of the org default.
  */
-export function getDomain(environment: Environment): string {
+export function getDomain(environment: Environment, domain?: string): string {
+  const baseDomain = domain || ORG.DOMAIN;
   switch (environment) {
     case "production":
-      return ORG.DOMAIN;
+      return baseDomain;
     case "alpha":
-      return `alpha.${ORG.DOMAIN}`;
+      return `alpha.${baseDomain}`;
     case "beta":
-      return `beta.${ORG.DOMAIN}`;
+      return `beta.${baseDomain}`;
   }
 }
 

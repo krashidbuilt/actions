@@ -125,6 +125,18 @@ describe("findApplicationBucket", () => {
       "Application bucket does not exist: ctrl.krashidbuilt.com",
     );
   });
+
+  it("uses custom domain when provided", async () => {
+    mockAwsOutput("2024-01-01 00:00:00 www.alpha.kauffman.ai\n");
+    const result = await findApplicationBucket("www", "alpha", "kauffman.ai");
+    expect(result).toBe("www.alpha.kauffman.ai");
+  });
+
+  it("uses custom domain for production", async () => {
+    mockAwsOutput("2024-01-01 00:00:00 www.kauffman.ai\n");
+    const result = await findApplicationBucket("www", "production", "kauffman.ai");
+    expect(result).toBe("www.kauffman.ai");
+  });
 });
 
 describe("findDistributionId", () => {
@@ -298,9 +310,9 @@ describe("syncFromArtifact", () => {
 
   it("propagates sync errors", async () => {
     mockExec.mockRejectedValueOnce(new Error("sync failed"));
-    await expect(syncFromArtifact("artifact.krashidbuilt.com", "ctrl", "1.0.0", "ctrl.krashidbuilt.com")).rejects.toThrow(
-      "sync failed",
-    );
+    await expect(
+      syncFromArtifact("artifact.krashidbuilt.com", "ctrl", "1.0.0", "ctrl.krashidbuilt.com"),
+    ).rejects.toThrow("sync failed");
   });
 });
 

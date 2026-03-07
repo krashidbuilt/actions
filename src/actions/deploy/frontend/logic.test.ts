@@ -340,7 +340,7 @@ describe("run", () => {
 
     await run();
 
-    expect(mockFindApplicationBucket).toHaveBeenCalledWith("custom-app", "alpha");
+    expect(mockFindApplicationBucket).toHaveBeenCalledWith("custom-app", "alpha", undefined);
     expect(mockSetOutput).toHaveBeenCalledWith("url", "https://custom-app.alpha.krashidbuilt.com");
   });
 
