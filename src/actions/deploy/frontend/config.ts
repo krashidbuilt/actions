@@ -3,7 +3,7 @@
  */
 
 import { defineAction } from "../../../core/action-config.js";
-import { AWS, BUILD, RUNTIME } from "../../../core/constants.js";
+import { AWS, BUILD, ORG, RUNTIME } from "../../../core/constants.js";
 
 export const config = defineAction({
   name: "Deploy Frontend",
@@ -34,6 +34,10 @@ export const config = defineAction({
     },
     github_token: {
       description: "GitHub token",
+    },
+    domain: {
+      description: "Domain for bucket resolution (defaults to krashidbuilt.com)",
+      default: ORG.DOMAIN,
     },
     app_name: {
       description: "Application name (auto-detected from package.json if not set)",

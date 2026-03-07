@@ -17,6 +17,10 @@ on:
         description: "Target environment (auto-detected from branch if not set)"
         type: string
         default: ""
+      domain:
+        description: "Domain for bucket resolution (defaults to krashidbuilt.com)"
+        type: string
+        default: ""
       app_name:
         description: "Application name (auto-detected from package.json if not set)"
         type: string
@@ -123,6 +127,7 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
           build_directory: ${{ inputs.build_directory }}
           environment: ${{ inputs.environment }}
+          domain: ${{ inputs.domain }}
           app_name: ${{ inputs.app_name }}
           version: ${{ steps.version.outputs.version }}
           aws_region: ${{ inputs.aws_region }}
