@@ -464,4 +464,32 @@ describe("run", () => {
     const cpArgs = cpCall![1] as string[];
     expect(cpArgs).toContain("s3://artifact.krashidbuilt.com/ctrl/2.5.0");
   });
+
+  it("namespaces artifact prefix by domain when custom domain is provided", async () => {
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === "invalidate_cache") return "false";
+      if (name === "app_name") return "www";
+      if (name === "domain") return "kauffman.ai";
+      return "";
+    });
+    mockEnvironmentInput.mockReturnValue(undefined);
+    mockBuildDirectory.mockReturnValue("dist");
+    mockWorkingDirectory.mockReturnValue(".");
+    mockAwsRegion.mockReturnValue("us-east-1");
+    mockGithubToken.mockReturnValue("token");
+    mockDetectEnvironment.mockReturnValue("alpha");
+    mockReadPackageVersion.mockReturnValue("0.1.0");
+    mockGetDomain.mockReturnValue("alpha.kauffman.ai");
+
+    await run();
+
+    // Verify artifact upload uses domain-prefixed path
+    const cpCall = mockExec.mock.calls.find((call) => Array.isArray(call[1]) && (call[1] as string[]).includes("cp"));
+    expect(cpCall).toBeDefined();
+    const cpArgs = cpCall![1] as string[];
+    expect(cpArgs).toContain("s3://artifact.krashidbuilt.com/kauffman.ai/www/0.1.0");
+
+    // Verify cleanup uses domain-prefixed path
+    expect(mockGetLastNVersions).toHaveBeenCalledWith("artifact.krashidbuilt.com", "kauffman.ai/www", 3, "0.1.0");
+  });
 });

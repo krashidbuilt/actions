@@ -107,6 +107,10 @@ export async function run(): Promise<void> {
     appName = inputs.appName || detectAppName(workingDir);
     version = inputs.version || readPackageVersion(workingDir);
 
+    // Artifact prefix: namespace by domain when using a custom domain to prevent collisions
+    // e.g. "www" for default domain, "kauffman.ai/www" for custom domain
+    const artifactPrefix = inputs.domain ? `${inputs.domain}/${appName}` : appName;
+
     logger.info("Starting frontend deployment", {
       environment,
       appName,
@@ -134,8 +138,14 @@ export async function run(): Promise<void> {
     logger.info(`Application bucket: ${applicationBucket}`);
 
     // Step 3: Upload to artifact bucket (versioned archive)
-    logger.info(`Uploading to artifact bucket: s3://${artifactBucket}/${appName}/${version}/`);
-    await exec.exec("aws", ["s3", "cp", "--recursive", buildDir, `s3://${artifactBucket}/${appName}/${version}`]);
+    logger.info(`Uploading to artifact bucket: s3://${artifactBucket}/${artifactPrefix}/${version}/`);
+    await exec.exec("aws", [
+      "s3",
+      "cp",
+      "--recursive",
+      buildDir,
+      `s3://${artifactBucket}/${artifactPrefix}/${version}`,
+    ]);
 
     // Step 4: Sync to application bucket (live site)
     // DO NOT use --delete flag to prevent race condition white screens
@@ -158,10 +168,10 @@ export async function run(): Promise<void> {
     // This prevents S3 from growing indefinitely while keeping recent versions for quick rollback
     logger.info(`Cleaning up old assets (keeping last ${inputs.versionsToKeep} versions)...`);
     try {
-      const versionsToKeep = await getLastNVersions(artifactBucket, appName, inputs.versionsToKeep, version);
+      const versionsToKeep = await getLastNVersions(artifactBucket, artifactPrefix, inputs.versionsToKeep, version);
       logger.info(`Keeping assets for versions: ${versionsToKeep.join(", ")}`);
 
-      const filesToKeep = await getFilesFromVersions(artifactBucket, appName, versionsToKeep);
+      const filesToKeep = await getFilesFromVersions(artifactBucket, artifactPrefix, versionsToKeep);
       logger.info(`Found ${filesToKeep.size} unique files across last ${inputs.versionsToKeep} versions`);
 
       const allFiles = await getAllFilesFromBucket(applicationBucket);
