@@ -1,0 +1,44 @@
+/**
+ * Trigger Workflow Action Configuration
+ */
+
+import { defineAction } from "../../../core/action-config.js";
+
+export const config = defineAction({
+  name: "Trigger Workflow",
+  description: "Triggers a GitHub Actions workflow in a repository for one or more branches",
+  inputs: {
+    workflow: {
+      description: "Workflow file name (e.g., 'deploy.yml') or workflow ID",
+      required: true,
+    },
+    branches: {
+      description: "Comma-separated list of branches to trigger the workflow for",
+      required: true,
+    },
+    repository: {
+      description: "Repository in format 'owner/repo' (defaults to current repository)",
+    },
+    github_token: {
+      description: "GitHub token with workflow permissions",
+      required: true,
+    },
+    inputs: {
+      description: "JSON string of workflow inputs (optional)",
+    },
+  },
+  outputs: {
+    triggered_count: {
+      description: "Number of workflows triggered",
+    },
+    branches_triggered: {
+      description: "Comma-separated list of branches that were triggered",
+    },
+  },
+  runs: {
+    using: "node24",
+    main: "dist/index.js",
+  },
+});
+
+export type TriggerWorkflowConfig = typeof config;

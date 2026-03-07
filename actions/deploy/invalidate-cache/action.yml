@@ -1,0 +1,23 @@
+name: "Invalidate CloudFront Cache"
+description: "Invalidates the CloudFront cache for a frontend application"
+inputs:
+  environment:
+    description: "Target environment (alpha, beta, production)"
+    required: true
+  app_name:
+    description: "Application name (used to find the S3 bucket and CloudFront distribution)"
+    required: true
+  paths:
+    description: "Paths to invalidate (comma-separated, default: /*)"
+    default: "/*"
+  aws_region:
+    description: "AWS region"
+    default: "us-east-1"
+outputs:
+  invalidation_id:
+    description: "CloudFront invalidation ID"
+  distribution_id:
+    description: "CloudFront distribution ID"
+runs:
+  using: "node24"
+  main: "dist/index.js"

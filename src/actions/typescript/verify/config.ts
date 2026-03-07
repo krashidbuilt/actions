@@ -1,0 +1,53 @@
+/**
+ * TypeScript Verify Action Configuration
+ */
+
+import { defineAction } from "../../../core/action-config.js";
+
+export const config = defineAction({
+  name: "TypeScript Verify",
+  description: "Runs build, verify, and optionally test scripts for a TypeScript project",
+  inputs: {
+    working_directory: {
+      description: "Working directory",
+      default: ".",
+    },
+    package_manager: {
+      description: "Package manager to use (npm, yarn, bun, or auto)",
+      default: "auto",
+    },
+    run_build: {
+      description: "Run build script if it exists",
+      default: "true",
+    },
+    run_verify: {
+      description: "Run verify script",
+      default: "true",
+    },
+    run_tests: {
+      description: "Run test script if it exists",
+      default: "false",
+    },
+    node_options: {
+      description: "NODE_OPTIONS environment variable",
+      default: "--max-old-space-size=8192",
+    },
+  },
+  outputs: {
+    build_success: {
+      description: "Whether the build step succeeded",
+    },
+    verify_success: {
+      description: "Whether the verify step succeeded",
+    },
+    test_success: {
+      description: "Whether the test step succeeded",
+    },
+  },
+  runs: {
+    using: "node24",
+    main: "dist/index.js",
+  },
+});
+
+export type TypeScriptVerifyConfig = typeof config;

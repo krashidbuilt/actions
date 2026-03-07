@@ -1,0 +1,25 @@
+name: "Merge Branch"
+description: "Merges one branch into one or more target branches"
+inputs:
+  source_branch:
+    description: "Branch to merge from"
+    required: true
+  target_branch:
+    description: "Branch to merge into (use target_branches for multiple)"
+  target_branches:
+    description: "Comma-separated list of branches to merge into (e.g., 'develop,staging')"
+  message:
+    description: "Merge commit message (use {target} as placeholder for target branch name)"
+  dry_run:
+    description: "Dry run mode (do not actually merge)"
+    default: "false"
+outputs:
+  merged:
+    description: "Whether any merge was performed (true/false)"
+  merged_branches:
+    description: "Comma-separated list of branches that were successfully merged"
+  failed_branches:
+    description: "Comma-separated list of branches that failed to merge"
+runs:
+  using: "node24"
+  main: "dist/index.js"

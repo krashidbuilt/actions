@@ -1,0 +1,50 @@
+/**
+ * Parse Version Action Configuration
+ */
+
+import { defineAction } from "../../../core/action-config.js";
+
+export const config = defineAction({
+  name: "Parse Version",
+  description: "Parses a semver version string and extracts components (major, minor, patch, prerelease)",
+  inputs: {
+    version: {
+      description: "Primary version string to parse (e.g., '1.2.3' or '1.2.3-beta.1')",
+    },
+    fallback_version: {
+      description: "Fallback version string if primary version is empty",
+    },
+  },
+  outputs: {
+    version: {
+      description: "The version string (without 'v' prefix)",
+    },
+    tag: {
+      description: "The version tag (with 'v' prefix, e.g., 'v1.2.3')",
+    },
+    major: {
+      description: "Major version tag (e.g., 'v1')",
+    },
+    minor: {
+      description: "Minor version number",
+    },
+    patch: {
+      description: "Patch version number",
+    },
+    prerelease: {
+      description: "Prerelease identifier (e.g., 'beta.1'), empty if stable",
+    },
+    is_prerelease: {
+      description: "Whether this is a prerelease version",
+    },
+    base_version: {
+      description: "Base version without prerelease (e.g., '1.2.3')",
+    },
+  },
+  runs: {
+    using: "node24",
+    main: "dist/index.js",
+  },
+});
+
+export type ParseVersionConfig = typeof config;

@@ -1,0 +1,21 @@
+name: "Build Binary"
+description: "Build a standalone binary using bun build --compile"
+inputs:
+  entry:
+    description: "Entry point file (e.g. daemon/src/index.ts)"
+    required: true
+  target:
+    description: "Bun compile target (e.g. bun-darwin-arm64)"
+    required: true
+  outfile:
+    description: "Output binary name (e.g. ctrl-daemon-darwin-arm64)"
+    required: true
+  working_directory:
+    description: "Working directory"
+    default: "."
+outputs:
+  artifact_path:
+    description: "Path to the built binary"
+runs:
+  using: "node24"
+  main: "dist/index.js"

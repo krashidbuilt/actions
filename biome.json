@@ -1,0 +1,76 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.4/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "lineWidth": 120
+  },
+  "files": {
+    "includes": [
+      "**/*.ts",
+      "**/biome.json",
+      "**/package.json",
+      "**/tsconfig.json",
+      "**/tsconfig.*.json",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/actions/*/dist",
+      "!**/actions/*/*/dist"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": {
+        "noNonNullAssertion": "off",
+        "noParameterAssign": "error",
+        "useAsConstAssertion": "error",
+        "useDefaultParameterLast": "error",
+        "useEnumInitializers": "error",
+        "useSelfClosingElements": "error",
+        "useSingleVarDeclarator": {
+          "level": "error",
+          "fix": "safe"
+        },
+        "noUnusedTemplateLiteral": "error",
+        "useNumberNamespace": "error",
+        "noInferrableTypes": "error",
+        "noUselessElse": "error",
+        "useTemplate": {
+          "fix": "safe"
+        },
+        "useNodejsImportProtocol": {
+          "fix": "safe"
+        }
+      },
+      "suspicious": {
+        "noExplicitAny": "off"
+      },
+      "complexity": {
+        "useLiteralKeys": "off",
+        "useOptionalChain": {
+          "fix": "safe"
+        }
+      },
+      "correctness": {
+        "noUnusedImports": {
+          "fix": "safe"
+        }
+      },
+      "performance": {
+        "noAccumulatingSpread": "off"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  }
+}

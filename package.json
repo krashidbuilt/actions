@@ -1,0 +1,55 @@
+{
+  "name": "@krashidbuilt/actions",
+  "version": "0.1.0",
+  "description": "TypeScript-based reusable GitHub Actions for the krashidbuilt ecosystem",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "bundle": "bun run build && bun run bundle:actions && bun run generate:actions",
+    "bundle:actions": "tsx scripts/bundle-actions.ts",
+    "generate:actions": "tsx scripts/generate-action-ymls.ts",
+    "verify:bundles": "tsx scripts/verify-bundles.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "biome check .",
+    "fix": "biome check . --write",
+    "typecheck": "tsc --noEmit",
+    "verify": "bun run lint && bun run typecheck && bun run test:coverage && bun run verify:bundles && bun run verify:bundles-fresh",
+    "verify:bundles-fresh": "bun run bundle && git diff --exit-code actions/*/dist actions/*/*/dist || (echo '::error::Bundles are stale — run bun run bundle and commit' && exit 1)",
+    "clean": "rm -rf dist actions"
+  },
+  "keywords": [
+    "github-actions",
+    "ci-cd",
+    "krashidbuilt"
+  ],
+  "author": "Krashidbuilt <hello@krashidbuilt.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krashidbuilt/actions.git"
+  },
+  "dependencies": {
+    "@actions/cache": "6.0.0",
+    "@actions/core": "3.0.0",
+    "@actions/exec": "3.0.0",
+    "@actions/github": "9.0.0",
+    "@actions/glob": "0.6.1",
+    "@actions/io": "3.0.2",
+    "@actions/tool-cache": "4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@types/node": "24",
+    "@vitest/coverage-v8": "^4.0.17",
+    "esbuild": "^0.27.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.17",
+    "yaml": "^2.8.2"
+  }
+}

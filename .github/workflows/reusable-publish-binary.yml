@@ -1,0 +1,288 @@
+name: Reusable Publish Binary
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        type: string
+        default: "."
+      entry:
+        type: string
+        default: "src/index.ts"
+      npm_scope:
+        type: string
+        default: "@krashidbuilt"
+      binary_name:
+        type: string
+        default: "ctrl-daemon"
+      node_version:
+        type: string
+        default: "24"
+      bun_version:
+        type: string
+        default: "1.3.5"
+      run_verify:
+        type: boolean
+        default: true
+      create_release:
+        description: "Run versioning action to create tag + release (set false when another job already created the tag)"
+        type: boolean
+        default: false
+    secrets:
+      NPM_TOKEN:
+        required: true
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      dist_tag: ${{ steps.resolve.outputs.dist_tag }}
+      skipped: ${{ steps.resolve.outputs.skipped }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - run: git fetch origin --tags
+
+      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+        with:
+          node_version: ${{ inputs.node_version }}
+          bun_version: ${{ inputs.bun_version }}
+          working_directory: ${{ inputs.working_directory }}
+      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+      - name: Verify
+        if: inputs.run_verify
+        uses: krashidbuilt/actions/actions/typescript/verify@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+
+      - uses: krashidbuilt/actions/actions/versioning@v1
+        if: inputs.create_release
+        id: versioning
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          github_token: ${{ github.token }}
+          create_release: true
+          update_version_file: false
+          release_prerelease: ${{ github.ref_name != 'production' }}
+          prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [ "${{ inputs.create_release }}" = "true" ]; then
+            # Use versioning action outputs
+            echo "version=${{ steps.versioning.outputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ steps.versioning.outputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "skipped=${{ steps.versioning.outputs.skipped }}" >> "$GITHUB_OUTPUT"
+          else
+            # Read from latest git tag (created by a prior job), filtered by channel.
+            # git's version:refname sort doesn't understand semver prerelease ordering
+            # (beta sorts above alpha), so we must filter to the correct channel.
+            REF="${{ github.ref_name }}"
+            if [ "$REF" = "develop" ]; then
+              TAG_PATTERN='v*-alpha.*'
+            elif [ "$REF" = "staging" ]; then
+              TAG_PATTERN='v*-beta.*'
+            else
+              TAG_PATTERN='v[0-9]*.[0-9]*.[0-9]*'
+            fi
+            LATEST_TAG=$(git tag -l "$TAG_PATTERN" --sort=-version:refname | head -1)
+            # For production, exclude prerelease tags
+            if [ "$REF" != "develop" ] && [ "$REF" != "staging" ]; then
+              LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            fi
+            if [ -z "$LATEST_TAG" ]; then
+              echo "No version tags found for channel (pattern: $TAG_PATTERN)"
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            VERSION=${LATEST_TAG#v}
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Compute dist-tag from branch
+          REF="${{ github.ref_name }}"
+          if [ "$REF" = "develop" ]; then
+            echo "dist_tag=alpha" >> "$GITHUB_OUTPUT"
+          elif [ "$REF" = "staging" ]; then
+            echo "dist_tag=beta" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: version
+    if: needs.version.outputs.skipped != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+        with:
+          bun_version: ${{ inputs.bun_version }}
+          working_directory: ${{ inputs.working_directory }}
+      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+      - name: Build binary
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          EXT=""
+          if [[ "${{ matrix.platform }}" == windows-* ]]; then EXT=".exe"; fi
+          bun build --compile --target=bun-${{ matrix.platform }} --minify --define "__VERSION__='${VERSION}'" ${{ inputs.entry }} --outfile "${{ inputs.binary_name }}-${{ matrix.platform }}${EXT}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.platform }}
+          path: ${{ inputs.working_directory }}/${{ inputs.binary_name }}-${{ matrix.platform }}*
+
+  publish:
+    name: Publish
+    needs: [version, build]
+    if: needs.version.outputs.skipped != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - uses: krashidbuilt/actions/actions/utilities/detect-environment@v1
+        id: env
+      - uses: krashidbuilt/actions/actions/utilities/configure-aws@v1
+        with:
+          environment: ${{ steps.env.outputs.environment }}
+
+      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+        with:
+          node_version: ${{ inputs.node_version }}
+          bun_version: ${{ inputs.bun_version }}
+          working_directory: ${{ inputs.working_directory }}
+          registry_scope: ${{ inputs.npm_scope }}
+          registry_auth_token: ${{ secrets.NPM_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload binaries to artifact bucket
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          BINARY_NAME: ${{ inputs.binary_name }}
+          ENVIRONMENT: ${{ steps.env.outputs.environment }}
+        run: |
+          ARTIFACT_BUCKET=$(aws s3 ls | grep -o 'artifact\.[^ ]*krashidbuilt\.com' | head -1)
+          PLATFORMS="darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64"
+
+          for platform in $PLATFORMS; do
+            EXT=""; if [[ "$platform" == windows-* ]]; then EXT=".exe"; fi
+            binary="artifacts/binary-${platform}/${BINARY_NAME}-${platform}${EXT}"
+            echo "Uploading ${BINARY_NAME}-${platform}${EXT} to s3://${ARTIFACT_BUCKET}/${BINARY_NAME}/${ENVIRONMENT}/${VERSION}/"
+            aws s3 cp "$binary" "s3://${ARTIFACT_BUCKET}/${BINARY_NAME}/${ENVIRONMENT}/${VERSION}/${BINARY_NAME}-${platform}${EXT}"
+          done
+
+      - name: Stamp version and move binaries
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          BINARY_NAME: ${{ inputs.binary_name }}
+          NPM_SCOPE: ${{ inputs.npm_scope }}
+        run: |
+          PLATFORMS="darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64"
+
+          for platform in $PLATFORMS; do
+            pkg_name="${NPM_SCOPE}/${BINARY_NAME}-${platform}"
+            pkg_dir="npm/${pkg_name}"
+
+            # Stamp version into platform package.json
+            cd "$pkg_dir"
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            cd "$GITHUB_WORKSPACE/${{ inputs.working_directory }}"
+
+            # Move binary into platform package bin/
+            EXT=""; BIN_NAME="${BINARY_NAME}"
+            if [[ "$platform" == windows-* ]]; then EXT=".exe"; BIN_NAME="${BINARY_NAME}.exe"; fi
+            mkdir -p "${pkg_dir}/bin"
+            cp "${GITHUB_WORKSPACE}/artifacts/binary-${platform}/${BINARY_NAME}-${platform}${EXT}" "${pkg_dir}/bin/${BIN_NAME}"
+            chmod +x "${pkg_dir}/bin/${BIN_NAME}"
+          done
+
+          # Stamp version into main package.json
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+          # Update optionalDependencies to match
+          for platform in $PLATFORMS; do
+            pkg_name="${NPM_SCOPE}/${BINARY_NAME}-${platform}"
+            npm pkg set "optionalDependencies.${pkg_name}=${VERSION}"
+          done
+
+      - name: Publish platform packages
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          BINARY_NAME: ${{ inputs.binary_name }}
+          NPM_SCOPE: ${{ inputs.npm_scope }}
+          DIST_TAG: ${{ needs.version.outputs.dist_tag }}
+        run: |
+          PLATFORMS="darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64"
+
+          for platform in $PLATFORMS; do
+            pkg_dir="npm/${NPM_SCOPE}/${BINARY_NAME}-${platform}"
+            echo "Publishing ${NPM_SCOPE}/${BINARY_NAME}-${platform}@${DIST_TAG}"
+            cd "$pkg_dir"
+            npm publish --access public --tag "$DIST_TAG"
+            cd "$GITHUB_WORKSPACE/${{ inputs.working_directory }}"
+          done
+
+      - name: Remove prepublishOnly
+        working-directory: ${{ inputs.working_directory }}
+        run: npm pkg delete scripts.prepublishOnly 2>/dev/null || true
+
+      - name: Publish main package
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          DIST_TAG: ${{ needs.version.outputs.dist_tag }}
+        run: |
+          npm publish --access public --tag "$DIST_TAG"
+
+      - name: Upload binaries to GitHub Release
+        if: inputs.create_release
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          BINARY_NAME: ${{ inputs.binary_name }}
+        run: |
+          PLATFORMS="darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64"
+
+          for platform in $PLATFORMS; do
+            EXT=""; if [[ "$platform" == windows-* ]]; then EXT=".exe"; fi
+            binary="${GITHUB_WORKSPACE}/artifacts/binary-${platform}/${BINARY_NAME}-${platform}${EXT}"
+            echo "Uploading ${BINARY_NAME}-${platform}${EXT} to release ${TAG}"
+            gh release upload "$TAG" "$binary" --clobber
+          done

@@ -1,0 +1,43 @@
+/**
+ * Rollback Frontend Action Configuration
+ */
+
+import { defineAction } from "../../../core/action-config.js";
+import { AWS } from "../../../core/constants.js";
+
+export const config = defineAction({
+  name: "Rollback Frontend",
+  description: "Rolls back a frontend application to the previous version",
+  inputs: {
+    environment: {
+      description: "Target environment (alpha, beta, production)",
+      required: true,
+    },
+    app_name: {
+      description: "Application name (e.g., ctrl)",
+      required: true,
+    },
+    aws_region: {
+      description: "AWS region",
+      default: AWS.REGION,
+    },
+    invalidate_cache: {
+      description: "Whether to invalidate CloudFront cache after rollback",
+      default: "true",
+    },
+  },
+  outputs: {
+    current_version: {
+      description: "Version before rollback (latest)",
+    },
+    rolled_back_to: {
+      description: "Version rolled back to (previous)",
+    },
+  },
+  runs: {
+    using: "node24",
+    main: "dist/index.js",
+  },
+});
+
+export type RollbackFrontendConfig = typeof config;

@@ -1,0 +1,45 @@
+/**
+ * Detect Environment Action Configuration
+ */
+
+import { defineAction } from "../../../core/action-config.js";
+
+export const config = defineAction({
+  name: "Detect Environment",
+  description: "Detects the deployment environment from branch, tag, or explicit input",
+  inputs: {
+    environment: {
+      description: "Explicit environment override",
+    },
+    default_environment: {
+      description: "Default environment if not detected",
+      default: "alpha",
+    },
+    github_ref: {
+      description: "GitHub ref (defaults to GITHUB_REF)",
+    },
+  },
+  outputs: {
+    environment: {
+      description: "Detected environment",
+    },
+    is_production: {
+      description: "Whether this is production",
+    },
+    is_prerelease: {
+      description: "Whether this is a prerelease (non-production)",
+    },
+    domain: {
+      description: "Domain for the environment",
+    },
+    profile: {
+      description: "Build profile for the environment (production, staging, or preview)",
+    },
+  },
+  runs: {
+    using: "node24",
+    main: "dist/index.js",
+  },
+});
+
+export type DetectEnvironmentConfig = typeof config;
