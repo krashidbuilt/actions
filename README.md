@@ -1,6 +1,6 @@
 # @krashidbuilt/actions
 
-TypeScript-based reusable GitHub Actions for the krashidbuilt ecosystem.
+TypeScript-based reusable Gitea Actions for the krashidbuilt ecosystem.
 
 ## Consuming actions
 
@@ -13,7 +13,7 @@ Pin to the **floating major version tag** `@v1`:
 # Reusable workflows
 jobs:
   verify:
-    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-verify.yml@v1
+    uses: krashidbuilt/actions/.gitea/workflows/reusable-typescript-verify.yml@v1
     with:
       working_directory: daemon
 ```
@@ -29,7 +29,7 @@ Universal TypeScript verification. Runs setup → install → verify.
 ```yaml
 jobs:
   verify:
-    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-verify.yml@v1
+    uses: krashidbuilt/actions/.gitea/workflows/reusable-typescript-verify.yml@v1
     with:
       working_directory: daemon       # Package directory
       run_tests: true                 # Run test script (default: false)
@@ -44,14 +44,14 @@ Full deploy pipeline: setup → install → optional verify → version → depl
 ```yaml
 jobs:
   deploy:
-    uses: krashidbuilt/actions/.github/workflows/reusable-deploy-frontend.yml@v1
+    uses: krashidbuilt/actions/.gitea/workflows/reusable-deploy-frontend.yml@v1
     secrets: inherit
     with:
       working_directory: web
       app_name: ctrl
 ```
 
-Permissions (`id-token: write`, `contents: write`) are declared inside the reusable workflow — callers don't need them. Environment and prerelease identifier are auto-detected from the branch.
+Permissions (`contents: write`) are declared inside the reusable workflow — callers don't need them. AWS auth uses long-lived access keys passed in via `secrets.AWS_ACCESS_KEY_ID` / `secrets.AWS_SECRET_ACCESS_KEY` (set at the org level). Environment and prerelease identifier are auto-detected from the branch.
 
 ### reusable-typescript-publish.yml
 
@@ -60,7 +60,7 @@ Build → version → publish to npm via OIDC trusted publishing (no npm token n
 ```yaml
 jobs:
   publish:
-    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-publish.yml@v1
+    uses: krashidbuilt/actions/.gitea/workflows/reusable-typescript-publish.yml@v1
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}  # for install only — publish uses OIDC
     with:

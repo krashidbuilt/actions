@@ -1,5 +1,9 @@
 /**
- * AWS credentials via OIDC federation
+ * AWS credentials. Two paths:
+ * 1. Static — AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in env (Gitea, or any
+ *    runner where long-lived keys are passed via secrets). Used directly.
+ * 2. OIDC — assume role via GitHub Actions OIDC token. Falls back here when
+ *    no static creds are present.
  */
 
 import * as core from "@actions/core";
@@ -79,10 +83,30 @@ function extractXmlValue(xml: string, tag: string): string | undefined {
 }
 
 /**
- * Get full AWS config by assuming the OIDC role.
+ * Get full AWS config. Prefers static credentials in env (Gitea path); else
+ * falls back to OIDC role assumption (GitHub path).
  */
 export async function getAwsConfig(environment: Environment, region?: string): Promise<AwsConfig> {
   const awsRegion = region || core.getInput("AWS_REGION") || getEnv("AWS_REGION") || AWS.REGION;
+
+  const staticAccessKeyId = getEnv("AWS_ACCESS_KEY_ID");
+  const staticSecretAccessKey = getEnv("AWS_SECRET_ACCESS_KEY");
+  if (staticAccessKeyId && staticSecretAccessKey) {
+    logger.info("Using static AWS credentials from environment");
+    core.setSecret(staticSecretAccessKey);
+    const staticSessionToken = getEnv("AWS_SESSION_TOKEN");
+    if (staticSessionToken) core.setSecret(staticSessionToken);
+    return {
+      region: awsRegion,
+      credentials: {
+        accessKeyId: staticAccessKeyId,
+        secretAccessKey: staticSecretAccessKey,
+        ...(staticSessionToken ? { sessionToken: staticSessionToken } : {}),
+      },
+      environment,
+    };
+  }
+
   const roleArn = resolveRoleArn();
   const credentials = await assumeRoleWithOidc(roleArn);
 
