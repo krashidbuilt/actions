@@ -135,7 +135,11 @@ jobs:
           github_token: ${{ github.token }}
           invalidate_cache: ${{ inputs.invalidate_cache }}
       - name: Commit version changes
-        if: steps.version.outputs.skipped != 'true' && inputs.commit_versions
+        # `inputs.commit_versions == true` form (instead of bare
+        # `inputs.commit_versions`) — act_runner v0.2.13 evaluates the
+        # boolean default `false` to the string "false" which is then
+        # truthy in `if:` context, running the step on every deploy.
+        if: steps.version.outputs.skipped != 'true' && inputs.commit_versions == true
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
