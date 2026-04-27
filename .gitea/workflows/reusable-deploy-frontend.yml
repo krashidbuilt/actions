@@ -89,6 +89,16 @@ jobs:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
+      # Cache bun's package store keyed on the lockfile hash. With the
+      # gitea-runner persistent volume (config.yaml -> container.options),
+      # this is mostly belt-and-suspenders — the volume already carries
+      # the cache between runs. actions/cache still helps when the volume
+      # is fresh (new NAS, runner rebuild) and across runner host moves.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-
       - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
