@@ -84,24 +84,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - uses: https://git.dsm.krashidbuilt.com/krashidbuilt/actions/actions/typescript/setup@bk/gitea-actions-mirror
+      - uses: krashidbuilt/actions/actions/typescript/setup@v1
         with:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
-      - uses: https://git.dsm.krashidbuilt.com/krashidbuilt/actions/actions/typescript/install-dependencies@bk/gitea-actions-mirror
+      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
       - name: Verify
         if: inputs.run_verify
-        uses: https://git.dsm.krashidbuilt.com/krashidbuilt/actions/actions/typescript/verify@bk/gitea-actions-mirror
+        uses: krashidbuilt/actions/actions/typescript/verify@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
           run_build: false
           run_tests: ${{ inputs.run_tests }}
-      - uses: https://git.dsm.krashidbuilt.com/krashidbuilt/actions/actions/versioning@bk/gitea-actions-mirror
+      - uses: krashidbuilt/actions/actions/versioning@v1
         id: version
         with:
           working_directory: ${{ inputs.version_directory || inputs.working_directory }}
@@ -122,7 +122,7 @@ jobs:
         env:
           VITE_APP_VERSION: ${{ steps.version.outputs.version }}
         run: bun run ${{ inputs.build_command }}
-      - uses: https://git.dsm.krashidbuilt.com/krashidbuilt/actions/actions/deploy/frontend@bk/gitea-actions-mirror
+      - uses: krashidbuilt/actions/actions/deploy/frontend@v1
         if: steps.version.outputs.skipped != 'true'
         with:
           working_directory: ${{ inputs.working_directory }}
