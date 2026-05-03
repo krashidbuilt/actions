@@ -13,11 +13,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - uses: ./actions/typescript/setup
+      - uses: ./typescript/setup
         with:
           node_version: "24"
-      - uses: ./actions/typescript/install-dependencies
-      - uses: ./actions/typescript/verify
+      - uses: ./typescript/install-dependencies
+      - uses: ./typescript/verify
         with:
           run_build: "false"
           run_tests: "true"

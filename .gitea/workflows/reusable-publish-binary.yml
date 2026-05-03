@@ -53,21 +53,21 @@ jobs:
           node-version: ${{ inputs.node_version }}
       - run: git fetch origin --tags
 
-      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+      - uses: krashidbuilt/actions/typescript/setup@v1
         with:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
-      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
       - name: Verify
         if: inputs.run_verify
-        uses: krashidbuilt/actions/actions/typescript/verify@v1
+        uses: krashidbuilt/actions/typescript/verify@v1
         with:
           working_directory: ${{ inputs.working_directory }}
 
-      - uses: krashidbuilt/actions/actions/versioning@v1
+      - uses: krashidbuilt/actions/versioning@v1
         if: inputs.create_release
         id: versioning
         with:
@@ -137,11 +137,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+      - uses: krashidbuilt/actions/typescript/setup@v1
         with:
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
-      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
       - name: Build binary
@@ -173,13 +173,13 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
-      - uses: krashidbuilt/actions/actions/utilities/detect-environment@v1
+      - uses: krashidbuilt/actions/utilities/detect-environment@v1
         id: env
-      - uses: krashidbuilt/actions/actions/utilities/configure-aws@v1
+      - uses: krashidbuilt/actions/utilities/configure-aws@v1
         with:
           environment: ${{ steps.env.outputs.environment }}
 
-      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+      - uses: krashidbuilt/actions/typescript/setup@v1
         with:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
