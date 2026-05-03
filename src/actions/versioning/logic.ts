@@ -238,12 +238,19 @@ export async function run(): Promise<void> {
         }
       }
 
-      if (inputs.pushChanges && (inputs.updateVersionFile || inputs.createTag)) {
-        await exec.exec("git", ["push", "--set-upstream", "origin", "HEAD"]);
+      if (inputs.pushChanges) {
+        // Only push HEAD when updateVersionFile actually committed something —
+        // pushing a tag does NOT require pushing HEAD, and doing so unconditionally
+        // races with other concurrent jobs / commits and fails non-fast-forward.
+        if (inputs.updateVersionFile) {
+          await exec.exec("git", ["push", "--set-upstream", "origin", "HEAD"]);
+        }
         if (inputs.createTag) {
           await exec.exec("git", ["push", "origin", tag]);
         }
-        logger.info("Pushed changes and tag");
+        if (inputs.updateVersionFile || inputs.createTag) {
+          logger.info("Pushed changes and tag");
+        }
       }
 
       if (inputs.createRelease) {
@@ -433,12 +440,19 @@ export async function run(): Promise<void> {
       }
     }
 
-    if (inputs.pushChanges && (inputs.updateVersionFile || inputs.createTag)) {
-      await exec.exec("git", ["push", "--set-upstream", "origin", "HEAD"]);
+    if (inputs.pushChanges) {
+      // Only push HEAD when updateVersionFile actually committed something —
+      // pushing a tag does NOT require pushing HEAD, and doing so unconditionally
+      // races with other concurrent jobs / commits and fails non-fast-forward.
+      if (inputs.updateVersionFile) {
+        await exec.exec("git", ["push", "--set-upstream", "origin", "HEAD"]);
+      }
       if (inputs.createTag) {
         await exec.exec("git", ["push", "origin", tag]);
       }
-      logger.info("Pushed changes and tag");
+      if (inputs.updateVersionFile || inputs.createTag) {
+        logger.info("Pushed changes and tag");
+      }
     }
 
     // Create GitHub release (idempotent - updates if exists)

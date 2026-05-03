@@ -155,6 +155,31 @@ describe("getAwsConfig", () => {
     const config = await getAwsConfig("alpha", "eu-west-1");
     expect(config.region).toBe("eu-west-1");
   });
+
+  it("uses static credentials from env when present (skips OIDC)", async () => {
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "AKIA_STATIC");
+    vi.stubEnv("AWS_SECRET_ACCESS_KEY", "STATIC_SECRET");
+
+    const config = await getAwsConfig("production");
+
+    expect(config.credentials.accessKeyId).toBe("AKIA_STATIC");
+    expect(config.credentials.secretAccessKey).toBe("STATIC_SECRET");
+    expect(config.credentials.sessionToken).toBeUndefined();
+    expect(mockGetIDToken).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockSetSecret).toHaveBeenCalledWith("STATIC_SECRET");
+  });
+
+  it("includes session token from env when also present alongside static keys", async () => {
+    vi.stubEnv("AWS_ACCESS_KEY_ID", "AKIA_STATIC");
+    vi.stubEnv("AWS_SECRET_ACCESS_KEY", "STATIC_SECRET");
+    vi.stubEnv("AWS_SESSION_TOKEN", "STATIC_TOKEN");
+
+    const config = await getAwsConfig("production");
+
+    expect(config.credentials.sessionToken).toBe("STATIC_TOKEN");
+    expect(mockSetSecret).toHaveBeenCalledWith("STATIC_TOKEN");
+  });
 });
 
 describe("exportAwsCredentials", () => {
