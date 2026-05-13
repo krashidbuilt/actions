@@ -9,7 +9,21 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
-const defaultActionsDir = join(rootDir, "actions");
+const defaultActionsDir = rootDir;
+
+// Top-level dirs that are NOT action categories
+const SKIP_DIRS = new Set([
+  "node_modules",
+  "coverage",
+  "dist",
+  "src",
+  "scripts",
+  ".gitea",
+  ".github",
+  ".git",
+  ".husky",
+  ".vscode",
+]);
 
 export interface ActionInfo {
   path: string;
@@ -18,7 +32,7 @@ export interface ActionInfo {
 }
 
 /**
- * Discover all actions under the actions/ directory
+ * Discover all actions at the repo root (deploy/, typescript/, utilities/, versioning/, etc.)
  */
 export function discoverActions(actionsDir = defaultActionsDir): ActionInfo[] {
   const allActions: ActionInfo[] = [];
@@ -31,6 +45,8 @@ export function discoverActions(actionsDir = defaultActionsDir): ActionInfo[] {
 
   for (const entry of topLevel) {
     if (!entry.isDirectory()) continue;
+    if (SKIP_DIRS.has(entry.name)) continue;
+    if (entry.name.startsWith(".")) continue;
 
     const topPath = join(actionsDir, entry.name);
     const actionYmlPath = join(topPath, "action.yml");

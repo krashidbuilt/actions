@@ -45,23 +45,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+      - uses: krashidbuilt/actions/typescript/setup@v1
         with:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
           registry_scope: ${{ inputs.registry_scope }}
-      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
       - name: Verify
         if: inputs.run_verify
-        uses: krashidbuilt/actions/actions/typescript/verify@v1
+        uses: krashidbuilt/actions/typescript/verify@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
-      - uses: krashidbuilt/actions/actions/versioning@v1
+      - uses: krashidbuilt/actions/versioning@v1
         id: version
         with:
           working_directory: ${{ inputs.working_directory }}
@@ -70,7 +70,7 @@ jobs:
           update_version_file: false
           release_prerelease: ${{ github.ref_name != 'production' }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
-      - uses: krashidbuilt/actions/actions/typescript/publish@v1
+      - uses: krashidbuilt/actions/typescript/publish@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}

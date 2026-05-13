@@ -35,22 +35,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+      - uses: krashidbuilt/actions/typescript/setup@v1
         with:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
-      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
       - name: Install additional dependencies
         if: inputs.additional_install_directory != ''
-        uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+        uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: "${{ inputs.working_directory }}/${{ inputs.additional_install_directory }}"
           package_manager: ${{ inputs.package_manager }}
-      - uses: krashidbuilt/actions/actions/typescript/verify@v1
+      - uses: krashidbuilt/actions/typescript/verify@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
