@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - uses: krashidbuilt/actions/actions/utilities/sync-branches@v1
+      - uses: krashidbuilt/actions/utilities/sync-branches@v1
         with:
           source_branch: ${{ inputs.source_branch }}
           target_branches: ${{ inputs.target_branches }}

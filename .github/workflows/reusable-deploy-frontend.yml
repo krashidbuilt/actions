@@ -71,10 +71,11 @@ jobs:
     name: Deploy
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: write
     env:
-      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ vars.AWS_REGION || inputs.aws_region }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,24 +84,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - uses: krashidbuilt/actions/actions/typescript/setup@v1
+      - uses: krashidbuilt/actions/typescript/setup@v1
         with:
           node_version: ${{ inputs.node_version }}
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
-      - uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+      # Cache bun's package store keyed on the lockfile hash. With the
+      # gitea-runner persistent volume (config.yaml -> container.options),
+      # this is mostly belt-and-suspenders — the volume already carries
+      # the cache between runs. actions/cache still helps when the volume
+      # is fresh (new NAS, runner rebuild) and across runner host moves.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
       - name: Verify
         if: inputs.run_verify
-        uses: krashidbuilt/actions/actions/typescript/verify@v1
+        uses: krashidbuilt/actions/typescript/verify@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
           run_build: false
           run_tests: ${{ inputs.run_tests }}
-      - uses: krashidbuilt/actions/actions/versioning@v1
+      - uses: krashidbuilt/actions/versioning@v1
         id: version
         with:
           working_directory: ${{ inputs.version_directory || inputs.working_directory }}
@@ -121,7 +132,7 @@ jobs:
         env:
           VITE_APP_VERSION: ${{ steps.version.outputs.version }}
         run: bun run ${{ inputs.build_command }}
-      - uses: krashidbuilt/actions/actions/deploy/frontend@v1
+      - uses: krashidbuilt/actions/deploy/frontend@v1
         if: steps.version.outputs.skipped != 'true'
         with:
           working_directory: ${{ inputs.working_directory }}
@@ -134,7 +145,11 @@ jobs:
           github_token: ${{ github.token }}
           invalidate_cache: ${{ inputs.invalidate_cache }}
       - name: Commit version changes
-        if: steps.version.outputs.skipped != 'true' && inputs.commit_versions
+        # `inputs.commit_versions == true` form (instead of bare
+        # `inputs.commit_versions`) — act_runner v0.2.13 evaluates the
+        # boolean default `false` to the string "false" which is then
+        # truthy in `if:` context, running the step on every deploy.
+        if: steps.version.outputs.skipped != 'true' && inputs.commit_versions == true
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
