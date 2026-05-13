@@ -1,0 +1,35 @@
+name: Reusable Back-Merge
+
+on:
+  workflow_call:
+    inputs:
+      source_branch:
+        description: "Branch to merge from (typically production)"
+        type: string
+        default: "production"
+      target_branches:
+        description: "Comma-separated branches to merge into"
+        type: string
+        default: "staging,develop"
+
+jobs:
+  back-merge:
+    name: Back-merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PUSH_TOKEN || github.token }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: krashidbuilt/actions/utilities/sync-branches@v1
+        with:
+          source_branch: ${{ inputs.source_branch }}
+          target_branches: ${{ inputs.target_branches }}
+          mode: merge
+          conflict_strategy: theirs
+          create_if_missing: false

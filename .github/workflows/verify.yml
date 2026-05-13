@@ -1,0 +1,23 @@
+name: Verify
+
+on:
+  pull_request:
+    branches: [develop, staging, production]
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: ./typescript/setup
+        with:
+          node_version: "24"
+      - uses: ./typescript/install-dependencies
+      - uses: ./typescript/verify
+        with:
+          run_build: "false"
+          run_tests: "true"

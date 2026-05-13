@@ -19,8 +19,8 @@
     "fix": "biome check . --write",
     "typecheck": "tsc --noEmit",
     "verify": "bun run lint && bun run typecheck && bun run test:coverage && bun run verify:bundles && bun run verify:bundles-fresh",
-    "verify:bundles-fresh": "bun run bundle && git diff --exit-code actions/*/dist actions/*/*/dist || (echo '::error::Bundles are stale — run bun run bundle and commit' && exit 1)",
-    "clean": "rm -rf dist actions"
+    "verify:bundles-fresh": "bun run bundle && git diff --exit-code deploy/*/dist deploy/*/*/dist typescript/*/dist typescript/*/*/dist utilities/*/dist utilities/*/*/dist versioning/dist || (echo '::error::Bundles are stale — run bun run bundle and commit' && exit 1)",
+    "clean": "rm -rf dist deploy typescript utilities versioning"
   },
   "keywords": [
     "github-actions",

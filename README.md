@@ -8,12 +8,12 @@ Pin to the **floating major version tag** `@v1`:
 
 ```yaml
 # Individual actions
-- uses: krashidbuilt/actions/actions/typescript/setup@v1
+- uses: krashidbuilt/actions/typescript/setup@v1
 
 # Reusable workflows
 jobs:
   verify:
-    uses: krashidbuilt/actions/.gitea/workflows/reusable-typescript-verify.yml@v1
+    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-verify.yml@v1
     with:
       working_directory: daemon
 ```
@@ -29,7 +29,7 @@ Universal TypeScript verification. Runs setup → install → verify.
 ```yaml
 jobs:
   verify:
-    uses: krashidbuilt/actions/.gitea/workflows/reusable-typescript-verify.yml@v1
+    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-verify.yml@v1
     with:
       working_directory: daemon       # Package directory
       run_tests: true                 # Run test script (default: false)
@@ -44,7 +44,7 @@ Full deploy pipeline: setup → install → optional verify → version → depl
 ```yaml
 jobs:
   deploy:
-    uses: krashidbuilt/actions/.gitea/workflows/reusable-deploy-frontend.yml@v1
+    uses: krashidbuilt/actions/.github/workflows/reusable-deploy-frontend.yml@v1
     secrets: inherit
     with:
       working_directory: web
@@ -60,7 +60,7 @@ Build → version → publish to npm via OIDC trusted publishing (no npm token n
 ```yaml
 jobs:
   publish:
-    uses: krashidbuilt/actions/.gitea/workflows/reusable-typescript-publish.yml@v1
+    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-publish.yml@v1
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}  # for install only — publish uses OIDC
     with:
@@ -89,9 +89,14 @@ Actions are written in TypeScript with shared core utilities, bundled with esbui
 ```
 src/core/           # Shared utilities (env, logging, AWS, git, versioning)
 src/actions/        # Action source (config.ts + index.ts + logic.ts)
-actions/            # Generated output (action.yml + dist/index.js) — committed
+deploy/             # Generated output for deploy actions (action.yml + dist/index.js) — committed
+typescript/         # Generated output for typescript actions
+utilities/          # Generated output for utility actions
+versioning/         # Generated output for versioning action
 scripts/            # Build tooling (bundle, generate, verify)
 ```
+
+(Generated outputs live at the repo root by category; consumers reference them as `krashidbuilt/actions/<category>/<action>@v1`.)
 
 ## Development
 
@@ -109,7 +114,7 @@ bun run test               # Vitest
 ### Versioning
 
 ```yaml
-- uses: krashidbuilt/actions/actions/versioning@v1
+- uses: krashidbuilt/actions/versioning@v1
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     prerelease_identifier: alpha  # or beta
@@ -119,18 +124,18 @@ bun run test               # Vitest
 
 ```yaml
 # Setup Node.js + Bun
-- uses: krashidbuilt/actions/actions/typescript/setup@v1
+- uses: krashidbuilt/actions/typescript/setup@v1
 
 # Install dependencies
-- uses: krashidbuilt/actions/actions/typescript/install-dependencies@v1
+- uses: krashidbuilt/actions/typescript/install-dependencies@v1
 
 # Run verify (tsc + biome)
-- uses: krashidbuilt/actions/actions/typescript/verify@v1
+- uses: krashidbuilt/actions/typescript/verify@v1
   with:
     working_directory: daemon
 
 # Publish to npm (uses OIDC trusted publishing — requires id-token: write)
-- uses: krashidbuilt/actions/actions/typescript/publish@v1
+- uses: krashidbuilt/actions/typescript/publish@v1
   with:
     tag: alpha
 ```
@@ -139,31 +144,31 @@ bun run test               # Vitest
 
 ```yaml
 # Frontend (S3 + CloudFront)
-- uses: krashidbuilt/actions/actions/deploy/frontend@v1
+- uses: krashidbuilt/actions/deploy/frontend@v1
   with:
     working_directory: web
 
 # Deploy specific version from artifact bucket
-- uses: krashidbuilt/actions/actions/deploy/frontend-artifact@v1
+- uses: krashidbuilt/actions/deploy/frontend-artifact@v1
   with:
     environment: production
     version: 1.0.0
     app_name: ctrl
 
 # Invalidate CloudFront cache
-- uses: krashidbuilt/actions/actions/deploy/invalidate-cache@v1
+- uses: krashidbuilt/actions/deploy/invalidate-cache@v1
   with:
     environment: production
     app_name: ctrl
 
 # Rollback to previous version
-- uses: krashidbuilt/actions/actions/deploy/rollback-frontend@v1
+- uses: krashidbuilt/actions/deploy/rollback-frontend@v1
   with:
     environment: production
     app_name: ctrl
 
 # Build standalone binary
-- uses: krashidbuilt/actions/actions/deploy/build-binary@v1
+- uses: krashidbuilt/actions/deploy/build-binary@v1
   with:
     entry: daemon/src/index.ts
     target: bun-darwin-arm64
@@ -174,44 +179,44 @@ bun run test               # Vitest
 
 ```yaml
 # Configure AWS credentials for environment
-- uses: krashidbuilt/actions/actions/utilities/configure-aws@v1
+- uses: krashidbuilt/actions/utilities/configure-aws@v1
   with:
     environment: alpha
 
 # Detect environment from branch
-- uses: krashidbuilt/actions/actions/utilities/detect-environment@v1
+- uses: krashidbuilt/actions/utilities/detect-environment@v1
 
 # Detect app info from package.json
-- uses: krashidbuilt/actions/actions/utilities/detect-app-info@v1
+- uses: krashidbuilt/actions/utilities/detect-app-info@v1
 
 # Commit bundled artifacts
-- uses: krashidbuilt/actions/actions/utilities/commit-artifacts@v1
+- uses: krashidbuilt/actions/utilities/commit-artifacts@v1
   with:
-    paths: actions/
+    paths: deploy typescript utilities versioning
 
 # Parse semver version
-- uses: krashidbuilt/actions/actions/utilities/parse-version@v1
+- uses: krashidbuilt/actions/utilities/parse-version@v1
   with:
     version: 1.2.3-alpha.1
 
 # Update major version tags (v1 -> latest v1.x.x)
-- uses: krashidbuilt/actions/actions/utilities/update-version-tags@v1
+- uses: krashidbuilt/actions/utilities/update-version-tags@v1
   with:
     version: 1.2.3
 
 # Sync branches (back-merge)
-- uses: krashidbuilt/actions/actions/utilities/sync-branches@v1
+- uses: krashidbuilt/actions/utilities/sync-branches@v1
   with:
     source: production
     target: develop
 
 # Merge branch
-- uses: krashidbuilt/actions/actions/utilities/merge-branch@v1
+- uses: krashidbuilt/actions/utilities/merge-branch@v1
   with:
     branch: develop
 
 # Trigger workflow dispatch
-- uses: krashidbuilt/actions/actions/utilities/trigger-workflow@v1
+- uses: krashidbuilt/actions/utilities/trigger-workflow@v1
   with:
     workflow: release.yml
     branch: main

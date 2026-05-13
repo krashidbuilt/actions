@@ -1,0 +1,77 @@
+name: Reusable TypeScript Publish
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        type: string
+        default: "."
+      node_version:
+        type: string
+        default: "24"
+      bun_version:
+        type: string
+        default: "1.3.5"
+      package_manager:
+        type: string
+        default: "auto"
+      run_verify:
+        type: boolean
+        default: true
+      dry_run:
+        type: boolean
+        default: false
+      registry_scope:
+        type: string
+        default: "@krashidbuilt"
+      create_release:
+        type: boolean
+        default: true
+    secrets:
+      NPM_TOKEN:
+        required: true
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - uses: krashidbuilt/actions/typescript/setup@v1
+        with:
+          node_version: ${{ inputs.node_version }}
+          bun_version: ${{ inputs.bun_version }}
+          working_directory: ${{ inputs.working_directory }}
+          registry_scope: ${{ inputs.registry_scope }}
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          package_manager: ${{ inputs.package_manager }}
+      - name: Verify
+        if: inputs.run_verify
+        uses: krashidbuilt/actions/typescript/verify@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          package_manager: ${{ inputs.package_manager }}
+      - uses: krashidbuilt/actions/versioning@v1
+        id: version
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          github_token: ${{ github.token }}
+          create_release: ${{ inputs.create_release }}
+          update_version_file: false
+          release_prerelease: ${{ github.ref_name != 'production' }}
+          prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
+      - uses: krashidbuilt/actions/typescript/publish@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
+          token: ${{ secrets.NPM_TOKEN }}
