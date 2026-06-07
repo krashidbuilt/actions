@@ -1,0 +1,120 @@
+name: Reusable Deploy Backend (CDK)
+
+# Deploys an app repo's backend stack via CDK, using the caller's
+# gitea-actions deployer-user static keys directly. That user holds a
+# `CdkDeployAccess` policy (cloudformation:*, iam role-management + PassRole,
+# sts:AssumeRole) and the account's `cdk-*` bootstrap roles trust the account
+# root — so the user can drive a full `cdk deploy` with no role assumption and
+# no per-app deploy role. Pass app-specific CDK context (e.g. certificateArn)
+# via `cdk_context`; `channel=<env>` is always injected.
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Directory with package.json + CDK deps; build runs here"
+        type: string
+        default: "api"
+      infra_directory:
+        description: "Directory containing cdk.json (the CDK app)"
+        type: string
+        default: "api/infra"
+      stack_name:
+        description: "CDK stack to deploy. The token {ENV} is replaced with the PascalCase environment (Alpha/Beta/Production)."
+        type: string
+        required: true
+      cdk_context:
+        description: "Extra `--context key=value` pairs, one per line. `channel=<env>` is always injected automatically."
+        type: string
+        default: ""
+      build_command:
+        type: string
+        default: "build"
+      environment:
+        description: "Target environment override (auto-detected from branch if empty)"
+        type: string
+        default: ""
+      aws_region:
+        type: string
+        default: "us-east-1"
+      cdk_version:
+        description: "aws-cdk CLI version to run via bunx"
+        type: string
+        default: "2"
+      node_version:
+        type: string
+        default: "24"
+      bun_version:
+        type: string
+        default: "1.3.5"
+      package_manager:
+        type: string
+        default: "auto"
+      run_verify:
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ vars.AWS_REGION || inputs.aws_region }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: krashidbuilt/actions/typescript/setup@v1
+        with:
+          node_version: ${{ inputs.node_version }}
+          bun_version: ${{ inputs.bun_version }}
+          working_directory: ${{ inputs.working_directory }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-
+      - uses: krashidbuilt/actions/typescript/install-dependencies@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          package_manager: ${{ inputs.package_manager }}
+      - name: Detect environment
+        id: env
+        uses: krashidbuilt/actions/utilities/detect-environment@v1
+        with:
+          environment: ${{ inputs.environment }}
+      - name: Verify
+        if: inputs.run_verify
+        uses: krashidbuilt/actions/typescript/verify@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          package_manager: ${{ inputs.package_manager }}
+          run_build: false
+      - name: Build
+        working-directory: ${{ inputs.working_directory }}
+        run: bun run ${{ inputs.build_command }}
+      - name: CDK deploy
+        working-directory: ${{ inputs.infra_directory }}
+        env:
+          ENVIRONMENT: ${{ steps.env.outputs.environment }}
+          STACK_TEMPLATE: ${{ inputs.stack_name }}
+          CDK_CONTEXT: ${{ inputs.cdk_context }}
+          CDK_VERSION: ${{ inputs.cdk_version }}
+        run: |
+          set -euo pipefail
+          env="$ENVIRONMENT"
+          # PascalCase the environment for the {ENV} stack-name token.
+          pascal="$(printf '%s' "${env:0:1}" | tr '[:lower:]' '[:upper:]')${env:1}"
+          stack="${STACK_TEMPLATE//\{ENV\}/$pascal}"
+
+          # Build --context args: always channel=<env>, plus any caller lines.
+          context_args=( --context "channel=$env" )
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            context_args+=( --context "$line" )
+          done <<< "$CDK_CONTEXT"
+
+          echo "Deploying stack '$stack' (env=$env) with: ${context_args[*]}"
+          bunx "aws-cdk@${CDK_VERSION}" deploy "$stack" \
+            "${context_args[@]}" \
+            --require-approval never \
+            --no-rollback
