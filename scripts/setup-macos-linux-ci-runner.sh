@@ -106,7 +106,12 @@ p, cap, img = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p).read()
 s = re.sub(r"  capacity: \d+", f"  capacity: {cap}", s)
 s = re.sub(r"  force_pull: true", "  force_pull: false", s)
-s = re.sub(r'  docker_host: .*', '  docker_host: "unix://' + __import__("os").path.expanduser("~") + '/.docker/run/docker.sock"', s)
+# docker_host "-" = do NOT mount a docker socket into job containers.
+# Docker Desktop cannot bind-mount mac-host unix sockets into linux
+# containers (gRPC-FUSE: "operation not supported" — broke the 2023's
+# first jobs); our CI jobs never need docker-in-docker anyway. The
+# daemon itself reaches the engine via DOCKER_HOST in the LaunchAgent.
+s = re.sub(r"  docker_host: .*", '  docker_host: \"-\"', s)
 labels = f'  labels:\n    - "ubuntu-latest:docker://{img}"\n    - "ubuntu-22.04:docker://{img}"\n'
 s = re.sub(r"  labels:\n(    - .*\n)+", labels, s)
 open(p, "w").write(s)
