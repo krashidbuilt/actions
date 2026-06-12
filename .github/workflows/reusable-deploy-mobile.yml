@@ -1,0 +1,147 @@
+name: Reusable Deploy Mobile
+
+# Expo/EAS mobile app deploys (modeled on reusable-deploy-frontend).
+# Flow: verify → version (tag-only) → sync version files → commit [skip ci]
+# → EAS build (+ optional store auto-submit).
+#
+# EAS notes:
+# - eas-cli is invoked via npx with EXPO_TOKEN in env — expo/expo-github-action
+#   is not mirrored on this Gitea instance.
+# - --no-wait by default: the runner only queues the build on EAS cloud; build
+#   status lives in the Expo dashboard, not this workflow run.
+# - Auto-submit requires either submit.<profile>.ios.ascAppId in the consumer's
+#   eas.json or an App Store Connect API key stored on the EAS account.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        type: string
+        default: "."
+      node_version:
+        type: string
+        default: "24"
+      eas_version:
+        description: "eas-cli version for npx"
+        type: string
+        default: "latest"
+      profile:
+        description: "EAS build profile"
+        type: string
+        default: "production"
+      platforms:
+        description: "Platforms to build (ios, android, all)"
+        type: string
+        default: "ios"
+      auto_submit:
+        description: "Auto-submit to app stores"
+        type: boolean
+        default: true
+      wait_for_build:
+        description: "Wait for the EAS build to complete (blocks workflow)"
+        type: boolean
+        default: false
+      run_verify:
+        description: "Run npm run verify before building"
+        type: boolean
+        default: true
+      create_release:
+        description: "Create git tag and release via versioning action"
+        type: boolean
+        default: true
+      version_sync_command:
+        description: "Command to write VERSION into version files (package.json, app.json, ...). Receives VERSION env var."
+        type: string
+        default: "npm pkg set version=$VERSION"
+
+jobs:
+  deploy:
+    name: Deploy Mobile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PUSH_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: npm-
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working_directory }}
+        run: npm ci
+
+      # `inputs.x == true` form (instead of bare `inputs.x`) — act_runner
+      # v0.2.13 evaluates boolean defaults to strings, which are truthy in
+      # bare `if:` context. Same workaround as reusable-deploy-frontend.
+      - name: Verify
+        if: inputs.run_verify == true
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run verify
+
+      # Tag-only versioning (update_version_file: false): the sync command below
+      # writes the version into package.json AND app-specific files (e.g. Expo's
+      # app.json) in one place, then a single [skip ci] commit records both.
+      - uses: krashidbuilt/actions/versioning@v1
+        id: version
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          github_token: ${{ github.token }}
+          create_release: ${{ inputs.create_release }}
+          update_version_file: false
+          release_prerelease: false
+
+      - name: Sync version files
+        if: steps.version.outputs.skipped != 'true'
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ${{ inputs.version_sync_command }}
+
+      - name: Commit version changes
+        if: steps.version.outputs.skipped != 'true'
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(release): v${VERSION} [skip ci]"
+          git push origin HEAD
+
+      - name: Build iOS
+        if: steps.version.outputs.skipped != 'true' && (inputs.platforms == 'ios' || inputs.platforms == 'all')
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          npx eas-cli@${{ inputs.eas_version }} build \
+            --profile ${{ inputs.profile }} \
+            --platform ios \
+            ${{ inputs.auto_submit == true && '--auto-submit' || '' }} \
+            --non-interactive \
+            ${{ inputs.wait_for_build == true && '' || '--no-wait' }}
+
+      - name: Build Android
+        if: steps.version.outputs.skipped != 'true' && (inputs.platforms == 'android' || inputs.platforms == 'all')
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          npx eas-cli@${{ inputs.eas_version }} build \
+            --profile ${{ inputs.profile }} \
+            --platform android \
+            ${{ inputs.auto_submit == true && '--auto-submit' || '' }} \
+            --non-interactive \
+            ${{ inputs.wait_for_build == true && '' || '--no-wait' }}
