@@ -132,6 +132,13 @@ jobs:
       # Build ALWAYS runs (not gated on a version bump). Profile + submit flag
       # are derived from the branch via string comparison; an explicit profile
       # input wins. Production auto-submits to TestFlight; staging does not.
+      # Ad-hoc (non-production) builds add --refresh-ad-hoc-provisioning-profile so
+      # CI auto-registers any newly-added devices (from `eas device:create`) on the
+      # Apple portal and refreshes the profile before building — fully OTA, no Mac.
+      # Uses the ASC API key stored in EAS (the same one used for submissions);
+      # no extra secrets needed. Requires eas-cli >= 19.1.0 (default 'latest' is
+      # fine). The flag is omitted on production (App Store profiles have no device
+      # list). See https://docs.expo.dev/build/internal-distribution/
       - name: Build iOS
         if: inputs.platforms == 'ios' || inputs.platforms == 'all'
         working-directory: ${{ inputs.working_directory }}
@@ -140,11 +147,13 @@ jobs:
         run: |
           PROFILE="${{ inputs.profile != '' && inputs.profile || (github.ref_name == 'production' && 'production' || 'preview') }}"
           SUBMIT="${{ github.ref_name == 'production' && '--auto-submit' || '' }}"
-          echo "Building iOS — branch=${{ github.ref_name }} profile=$PROFILE submit='${SUBMIT:-none}'"
+          REFRESH="${{ github.ref_name == 'production' && '' || '--refresh-ad-hoc-provisioning-profile' }}"
+          echo "Building iOS — branch=${{ github.ref_name }} profile=$PROFILE submit='${SUBMIT:-none}' refresh='${REFRESH:-none}'"
           npx eas-cli@${{ inputs.eas_version }} build \
             --profile "$PROFILE" \
             --platform ios \
             $SUBMIT \
+            $REFRESH \
             --non-interactive \
             --no-wait
 
