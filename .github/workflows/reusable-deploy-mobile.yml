@@ -1,37 +1,31 @@
 name: Reusable Deploy Mobile
 
-# Expo/EAS mobile app deploys (modeled on reusable-deploy-frontend).
+# Parameter-driven Expo/EAS mobile deploy. The CALLER decides what each branch
+# (or workflow_dispatch input) means — this workflow has NO hardcoded branch
+# names. Map branch → behavior in your own deploy.yml, e.g.:
 #
-# Branch-driven behavior (matches the org develop/staging/production convention,
-# same spirit as reusable-deploy-frontend's branch-based prerelease IDs):
-#   - staging    → `preview`    profile = ad-hoc / internal distribution, no
-#                  store submit, no version bump. For on-device test installs.
-#   - production → `production`  profile = App Store / TestFlight build, auto
-#                  submit, version bump + tag + release.
-#   - anything else → `preview`, no submit, no bump.
-# An explicit `profile` input overrides the branch-derived profile.
+#   with:
+#     profile:                ${{ github.ref_name == 'production' && 'production' || 'preview' }}
+#     auto_submit:            ${{ github.ref_name == 'production' && 'true' || 'false' }}
+#     refresh_ad_hoc_profile: ${{ github.ref_name == 'production' && 'false' || 'true' }}
+#     create_release:         ${{ github.ref_name == 'production' && 'true' || 'false' }}
 #
-# KEY DIFFERENCE from reusable-deploy-frontend: the EAS build ALWAYS runs. We do
-# NOT gate it on a version bump — a staging→production promotion has no new
-# commits since staging's work, so a skip-gated build would never ship to
-# TestFlight. Only the version bump/commit is conditional (production + new
-# commits since last tag).
+# Boolean-ish inputs are declared as STRINGS ('true'/'false') and compared as
+# strings, because act_runner (Gitea) coerces real `type: boolean` inputs to
+# strings and then mis-evaluates them against `== true`. Strings are bulletproof.
+#
+# Defaults are SAFE: an under-specified caller does a plain ad-hoc `preview`
+# build with no store submit and no version bump — never an accidental release.
 #
 # EAS notes:
-# - eas-cli is invoked via npx with EXPO_TOKEN in env — expo/expo-github-action
-#   is not mirrored on this Gitea instance.
-# - --no-wait by default: the runner only queues the build on EAS cloud; build
-#   status lives in the Expo dashboard, not this workflow run.
-# - Auto-submit (production) requires submit.production.ios.ascAppId in the
-#   consumer's eas.json plus an App Store Connect API key on the EAS account.
-# - Ad-hoc (staging/preview) requires the ad-hoc distribution cert + provisioning
-#   profile to already exist on EAS (first-time setup is interactive). Newly
-#   registered devices are picked up automatically on the next build when an
-#   ASC API key is configured on the EAS account.
-#
-# Branch comparisons use github.ref_name STRING equality throughout — never
-# boolean inputs through `${{ }}` expressions, which act_runner v0.2.13 coerces
-# to strings and silently mis-evaluates against `== true`.
+# - eas-cli via npx with EXPO_TOKEN in env (expo/expo-github-action isn't mirrored
+#   on this Gitea instance). --no-wait: queues on EAS cloud and exits.
+# - auto_submit needs submit.<profile>.ios.ascAppId in the caller's eas.json +
+#   an ASC API key on the EAS account.
+# - refresh_ad_hoc_profile (eas-cli >=19.1.0) registers newly-added devices
+#   (eas device:create) on the Apple portal and refreshes the ad-hoc profile,
+#   fully OTA, using the ASC API key stored in EAS. Use it for ad-hoc/internal
+#   builds; leave off for store/production profiles (no device list).
 
 on:
   workflow_call:
@@ -47,19 +41,31 @@ on:
         type: string
         default: "latest"
       profile:
-        description: "EAS build profile override (empty = derive from branch)"
+        description: "EAS build profile (e.g. preview, production)"
         type: string
-        default: ""
+        default: "preview"
       platforms:
         description: "Platforms to build (ios, android, all)"
         type: string
         default: "ios"
+      auto_submit:
+        description: "'true' to --auto-submit to the app store"
+        type: string
+        default: "false"
+      refresh_ad_hoc_profile:
+        description: "'true' to --refresh-ad-hoc-provisioning-profile (ad-hoc/internal iOS only)"
+        type: string
+        default: "false"
+      create_release:
+        description: "'true' to version-bump + tag + sync version files"
+        type: string
+        default: "false"
       run_verify:
-        description: "Run npm run verify before building"
-        type: boolean
-        default: true
+        description: "'true' to run npm run verify before building"
+        type: string
+        default: "true"
       version_sync_command:
-        description: "Command to write VERSION into version files (package.json, app.json, ...). Receives VERSION env var. Production only."
+        description: "Command to write VERSION into version files. Receives VERSION env var. Used only when create_release is 'true'."
         type: string
         default: "npm pkg set version=$VERSION"
 
@@ -89,19 +95,16 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: npm ci
 
-      # `inputs.x == true` form — act_runner v0.2.13 evaluates boolean defaults
-      # to strings, truthy in a bare `if:`. Same workaround as the frontend reusable.
       - name: Verify
-        if: inputs.run_verify == true
+        if: inputs.run_verify == 'true'
         working-directory: ${{ inputs.working_directory }}
         run: npm run verify
 
-      # Versioning: PRODUCTION ONLY. Tag-only (update_version_file: false); the
-      # sync command writes the version into package.json AND app.json, recorded
-      # in one [skip ci] commit. Staging builds carry the current version as-is.
+      # Versioning (when create_release): tag-only; the sync command writes the
+      # version into package.json AND app files, recorded in one [skip ci] commit.
       - uses: krashidbuilt/actions/versioning@v1
         id: version
-        if: github.ref_name == 'production'
+        if: inputs.create_release == 'true'
         with:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
@@ -110,14 +113,14 @@ jobs:
           release_prerelease: false
 
       - name: Sync version files
-        if: github.ref_name == 'production' && steps.version.outputs.skipped != 'true'
+        if: inputs.create_release == 'true' && steps.version.outputs.skipped != 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: ${{ inputs.version_sync_command }}
 
       - name: Commit version changes
-        if: github.ref_name == 'production' && steps.version.outputs.skipped != 'true'
+        if: inputs.create_release == 'true' && steps.version.outputs.skipped != 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -129,22 +132,25 @@ jobs:
           git commit -m "chore(release): v${VERSION} [skip ci]"
           git push origin HEAD
 
-      # Build ALWAYS runs (not gated on a version bump). Profile + submit flag
-      # are derived from the branch via string comparison; an explicit profile
-      # input wins. Production auto-submits to TestFlight; staging does not.
+      # Build always runs. Flags assembled from inputs via shell (string-safe).
       - name: Build iOS
         if: inputs.platforms == 'ios' || inputs.platforms == 'all'
         working-directory: ${{ inputs.working_directory }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_VERSION: ${{ inputs.eas_version }}
+          PROFILE: ${{ inputs.profile }}
+          AUTO_SUBMIT: ${{ inputs.auto_submit }}
+          REFRESH: ${{ inputs.refresh_ad_hoc_profile }}
         run: |
-          PROFILE="${{ inputs.profile != '' && inputs.profile || (github.ref_name == 'production' && 'production' || 'preview') }}"
-          SUBMIT="${{ github.ref_name == 'production' && '--auto-submit' || '' }}"
-          echo "Building iOS — branch=${{ github.ref_name }} profile=$PROFILE submit='${SUBMIT:-none}'"
-          npx eas-cli@${{ inputs.eas_version }} build \
+          SUBMIT=""; [ "$AUTO_SUBMIT" = "true" ] && SUBMIT="--auto-submit"
+          REFRESH_FLAG=""; [ "$REFRESH" = "true" ] && REFRESH_FLAG="--refresh-ad-hoc-provisioning-profile"
+          echo "Building iOS — profile=$PROFILE submit='${SUBMIT:-none}' refresh='${REFRESH_FLAG:-none}'"
+          npx eas-cli@"$EAS_VERSION" build \
             --profile "$PROFILE" \
             --platform ios \
             $SUBMIT \
+            $REFRESH_FLAG \
             --non-interactive \
             --no-wait
 
@@ -153,11 +159,13 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_VERSION: ${{ inputs.eas_version }}
+          PROFILE: ${{ inputs.profile }}
+          AUTO_SUBMIT: ${{ inputs.auto_submit }}
         run: |
-          PROFILE="${{ inputs.profile != '' && inputs.profile || (github.ref_name == 'production' && 'production' || 'preview') }}"
-          SUBMIT="${{ github.ref_name == 'production' && '--auto-submit' || '' }}"
-          echo "Building Android — branch=${{ github.ref_name }} profile=$PROFILE submit='${SUBMIT:-none}'"
-          npx eas-cli@${{ inputs.eas_version }} build \
+          SUBMIT=""; [ "$AUTO_SUBMIT" = "true" ] && SUBMIT="--auto-submit"
+          echo "Building Android — profile=$PROFILE submit='${SUBMIT:-none}'"
+          npx eas-cli@"$EAS_VERSION" build \
             --profile "$PROFILE" \
             --platform android \
             $SUBMIT \
