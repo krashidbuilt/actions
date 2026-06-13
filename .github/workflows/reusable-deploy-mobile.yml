@@ -10,9 +10,12 @@ name: Reusable Deploy Mobile
 #     refresh_ad_hoc_profile: ${{ github.ref_name == 'production' && 'false' || 'true' }}
 #     create_release:         ${{ github.ref_name == 'production' && 'true' || 'false' }}
 #
-# Boolean-ish inputs are declared as STRINGS ('true'/'false') and compared as
-# strings, because act_runner (Gitea) coerces real `type: boolean` inputs to
-# strings and then mis-evaluates them against `== true`. Strings are bulletproof.
+# Boolean-ish inputs (auto_submit, refresh_ad_hoc_profile, create_release,
+# run_verify) accept EITHER a string ('true'/'false', any case, or yes/on/1) OR a
+# YAML boolean literal. They're declared `type: string` (the permissive type that
+# sidesteps act_runner's `type: boolean` coercion bug) and run through a single
+# Normalize step that canonicalizes them to 'true'/'false' — so every downstream
+# `if:`/flag is immune to how the caller expressed the value. Unrecognized → false.
 #
 # Defaults are SAFE: an under-specified caller does a plain ad-hoc `preview`
 # build with no store submit and no version bump — never an accidental release.
@@ -76,6 +79,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Normalize the boolean-ish inputs to canonical 'true'/'false' ONCE, so the
+      # rest of the workflow is immune to how the caller expressed them. Accepts
+      # true/false in any case, plus yes/on/1 — and a YAML boolean literal, which
+      # arrives here as the string "true"/"false" (inputs are type:string, the
+      # permissive type that sidesteps act_runner's boolean coercion bug). Anything
+      # unrecognized → false (safe). Downstream `if:` and flags read steps.norm.*.
+      - name: Normalize inputs
+        id: norm
+        env:
+          AUTO_SUBMIT: ${{ inputs.auto_submit }}
+          REFRESH: ${{ inputs.refresh_ad_hoc_profile }}
+          CREATE_RELEASE: ${{ inputs.create_release }}
+          RUN_VERIFY: ${{ inputs.run_verify }}
+        run: |
+          b() { case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in true|yes|on|1) echo true;; *) echo false;; esac; }
+          {
+            echo "auto_submit=$(b "$AUTO_SUBMIT")"
+            echo "refresh=$(b "$REFRESH")"
+            echo "create_release=$(b "$CREATE_RELEASE")"
+            echo "run_verify=$(b "$RUN_VERIFY")"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -96,7 +121,7 @@ jobs:
         run: npm ci
 
       - name: Verify
-        if: inputs.run_verify == 'true'
+        if: steps.norm.outputs.run_verify == 'true'
         working-directory: ${{ inputs.working_directory }}
         run: npm run verify
 
@@ -104,7 +129,7 @@ jobs:
       # version into package.json AND app files, recorded in one [skip ci] commit.
       - uses: krashidbuilt/actions/versioning@v1
         id: version
-        if: inputs.create_release == 'true'
+        if: steps.norm.outputs.create_release == 'true'
         with:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
@@ -113,14 +138,14 @@ jobs:
           release_prerelease: false
 
       - name: Sync version files
-        if: inputs.create_release == 'true' && steps.version.outputs.skipped != 'true'
+        if: steps.norm.outputs.create_release == 'true' && steps.version.outputs.skipped != 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: ${{ inputs.version_sync_command }}
 
       - name: Commit version changes
-        if: inputs.create_release == 'true' && steps.version.outputs.skipped != 'true'
+        if: steps.norm.outputs.create_release == 'true' && steps.version.outputs.skipped != 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -140,8 +165,8 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_VERSION: ${{ inputs.eas_version }}
           PROFILE: ${{ inputs.profile }}
-          AUTO_SUBMIT: ${{ inputs.auto_submit }}
-          REFRESH: ${{ inputs.refresh_ad_hoc_profile }}
+          AUTO_SUBMIT: ${{ steps.norm.outputs.auto_submit }}
+          REFRESH: ${{ steps.norm.outputs.refresh }}
         run: |
           SUBMIT=""; [ "$AUTO_SUBMIT" = "true" ] && SUBMIT="--auto-submit"
           REFRESH_FLAG=""; [ "$REFRESH" = "true" ] && REFRESH_FLAG="--refresh-ad-hoc-provisioning-profile"
@@ -161,7 +186,7 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_VERSION: ${{ inputs.eas_version }}
           PROFILE: ${{ inputs.profile }}
-          AUTO_SUBMIT: ${{ inputs.auto_submit }}
+          AUTO_SUBMIT: ${{ steps.norm.outputs.auto_submit }}
         run: |
           SUBMIT=""; [ "$AUTO_SUBMIT" = "true" ] && SUBMIT="--auto-submit"
           echo "Building Android — profile=$PROFILE submit='${SUBMIT:-none}'"
