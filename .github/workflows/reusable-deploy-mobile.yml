@@ -1,16 +1,37 @@
 name: Reusable Deploy Mobile
 
 # Expo/EAS mobile app deploys (modeled on reusable-deploy-frontend).
-# Flow: verify → version (tag-only) → sync version files → commit [skip ci]
-# → EAS build (+ optional store auto-submit).
+#
+# Branch-driven behavior (matches the org develop/staging/production convention,
+# same spirit as reusable-deploy-frontend's branch-based prerelease IDs):
+#   - staging    → `preview`    profile = ad-hoc / internal distribution, no
+#                  store submit, no version bump. For on-device test installs.
+#   - production → `production`  profile = App Store / TestFlight build, auto
+#                  submit, version bump + tag + release.
+#   - anything else → `preview`, no submit, no bump.
+# An explicit `profile` input overrides the branch-derived profile.
+#
+# KEY DIFFERENCE from reusable-deploy-frontend: the EAS build ALWAYS runs. We do
+# NOT gate it on a version bump — a staging→production promotion has no new
+# commits since staging's work, so a skip-gated build would never ship to
+# TestFlight. Only the version bump/commit is conditional (production + new
+# commits since last tag).
 #
 # EAS notes:
 # - eas-cli is invoked via npx with EXPO_TOKEN in env — expo/expo-github-action
 #   is not mirrored on this Gitea instance.
 # - --no-wait by default: the runner only queues the build on EAS cloud; build
 #   status lives in the Expo dashboard, not this workflow run.
-# - Auto-submit requires either submit.<profile>.ios.ascAppId in the consumer's
-#   eas.json or an App Store Connect API key stored on the EAS account.
+# - Auto-submit (production) requires submit.production.ios.ascAppId in the
+#   consumer's eas.json plus an App Store Connect API key on the EAS account.
+# - Ad-hoc (staging/preview) requires the ad-hoc distribution cert + provisioning
+#   profile to already exist on EAS (first-time setup is interactive). Newly
+#   registered devices are picked up automatically on the next build when an
+#   ASC API key is configured on the EAS account.
+#
+# Branch comparisons use github.ref_name STRING equality throughout — never
+# boolean inputs through `${{ }}` expressions, which act_runner v0.2.13 coerces
+# to strings and silently mis-evaluates against `== true`.
 
 on:
   workflow_call:
@@ -26,31 +47,19 @@ on:
         type: string
         default: "latest"
       profile:
-        description: "EAS build profile"
+        description: "EAS build profile override (empty = derive from branch)"
         type: string
-        default: "production"
+        default: ""
       platforms:
         description: "Platforms to build (ios, android, all)"
         type: string
         default: "ios"
-      auto_submit:
-        description: "Auto-submit to app stores"
-        type: boolean
-        default: true
-      wait_for_build:
-        description: "Wait for the EAS build to complete (blocks workflow)"
-        type: boolean
-        default: false
       run_verify:
         description: "Run npm run verify before building"
         type: boolean
         default: true
-      create_release:
-        description: "Create git tag and release via versioning action"
-        type: boolean
-        default: true
       version_sync_command:
-        description: "Command to write VERSION into version files (package.json, app.json, ...). Receives VERSION env var."
+        description: "Command to write VERSION into version files (package.json, app.json, ...). Receives VERSION env var. Production only."
         type: string
         default: "npm pkg set version=$VERSION"
 
@@ -80,35 +89,35 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: npm ci
 
-      # `inputs.x == true` form (instead of bare `inputs.x`) — act_runner
-      # v0.2.13 evaluates boolean defaults to strings, which are truthy in
-      # bare `if:` context. Same workaround as reusable-deploy-frontend.
+      # `inputs.x == true` form — act_runner v0.2.13 evaluates boolean defaults
+      # to strings, truthy in a bare `if:`. Same workaround as the frontend reusable.
       - name: Verify
         if: inputs.run_verify == true
         working-directory: ${{ inputs.working_directory }}
         run: npm run verify
 
-      # Tag-only versioning (update_version_file: false): the sync command below
-      # writes the version into package.json AND app-specific files (e.g. Expo's
-      # app.json) in one place, then a single [skip ci] commit records both.
+      # Versioning: PRODUCTION ONLY. Tag-only (update_version_file: false); the
+      # sync command writes the version into package.json AND app.json, recorded
+      # in one [skip ci] commit. Staging builds carry the current version as-is.
       - uses: krashidbuilt/actions/versioning@v1
         id: version
+        if: github.ref_name == 'production'
         with:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
-          create_release: ${{ inputs.create_release }}
+          create_release: true
           update_version_file: false
           release_prerelease: false
 
       - name: Sync version files
-        if: steps.version.outputs.skipped != 'true'
+        if: github.ref_name == 'production' && steps.version.outputs.skipped != 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: ${{ inputs.version_sync_command }}
 
       - name: Commit version changes
-        if: steps.version.outputs.skipped != 'true'
+        if: github.ref_name == 'production' && steps.version.outputs.skipped != 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -120,28 +129,37 @@ jobs:
           git commit -m "chore(release): v${VERSION} [skip ci]"
           git push origin HEAD
 
+      # Build ALWAYS runs (not gated on a version bump). Profile + submit flag
+      # are derived from the branch via string comparison; an explicit profile
+      # input wins. Production auto-submits to TestFlight; staging does not.
       - name: Build iOS
-        if: steps.version.outputs.skipped != 'true' && (inputs.platforms == 'ios' || inputs.platforms == 'all')
+        if: inputs.platforms == 'ios' || inputs.platforms == 'all'
         working-directory: ${{ inputs.working_directory }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
+          PROFILE="${{ inputs.profile != '' && inputs.profile || (github.ref_name == 'production' && 'production' || 'preview') }}"
+          SUBMIT="${{ github.ref_name == 'production' && '--auto-submit' || '' }}"
+          echo "Building iOS — branch=${{ github.ref_name }} profile=$PROFILE submit='${SUBMIT:-none}'"
           npx eas-cli@${{ inputs.eas_version }} build \
-            --profile ${{ inputs.profile }} \
+            --profile "$PROFILE" \
             --platform ios \
-            ${{ inputs.auto_submit == true && '--auto-submit' || '' }} \
+            $SUBMIT \
             --non-interactive \
-            ${{ inputs.wait_for_build == true && '' || '--no-wait' }}
+            --no-wait
 
       - name: Build Android
-        if: steps.version.outputs.skipped != 'true' && (inputs.platforms == 'android' || inputs.platforms == 'all')
+        if: inputs.platforms == 'android' || inputs.platforms == 'all'
         working-directory: ${{ inputs.working_directory }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
+          PROFILE="${{ inputs.profile != '' && inputs.profile || (github.ref_name == 'production' && 'production' || 'preview') }}"
+          SUBMIT="${{ github.ref_name == 'production' && '--auto-submit' || '' }}"
+          echo "Building Android — branch=${{ github.ref_name }} profile=$PROFILE submit='${SUBMIT:-none}'"
           npx eas-cli@${{ inputs.eas_version }} build \
-            --profile ${{ inputs.profile }} \
+            --profile "$PROFILE" \
             --platform android \
-            ${{ inputs.auto_submit == true && '--auto-submit' || '' }} \
+            $SUBMIT \
             --non-interactive \
-            ${{ inputs.wait_for_build == true && '' || '--no-wait' }}
+            --no-wait
