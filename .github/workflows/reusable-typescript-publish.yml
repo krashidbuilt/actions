@@ -44,6 +44,11 @@ on:
         # that live on a single line (main) name it here.
         type: string
         default: "production"
+      skip_build:
+        # Source-only packages (bin points at .ts) have a build script that
+        # compiles a standalone binary which never ships in the tarball.
+        type: boolean
+        default: false
       create_release:
         type: boolean
         default: true
@@ -102,3 +107,4 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
           use_oidc: ${{ inputs.use_oidc }}
+          skip_build: ${{ inputs.skip_build }}
