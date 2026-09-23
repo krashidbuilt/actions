@@ -103,13 +103,29 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
           run_build: ${{ !inputs.skip_build }}
+      # Versioning runs twice on purpose, and the split is the point.
+      #
+      # It used to run once, before publish, creating the tag and the release as
+      # it computed the number. When publish then failed — an expired token, a
+      # registry outage, a red build — the tag and the release survived and
+      # advertised a version the registry never received. googlecli carried
+      # v0.11.1 and v0.11.2-alpha.1 that way, and with update_version_file on at
+      # the time, a chore(release) commit for the phantom version landed on main
+      # permanently.
+      #
+      # So: compute the number with no side effects, publish, and only record
+      # the release once the package is actually in the registry. The second
+      # call recomputes the same number — the tag state and the commits it reads
+      # are unchanged by publishing — and is where the tag, the release and the
+      # optional version commit are made.
       - uses: krashidbuilt/actions/versioning@v1
         id: version
         with:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
-          create_release: ${{ inputs.create_release }}
-          update_version_file: ${{ inputs.update_version_file }}
+          create_tag: false
+          create_release: false
+          update_version_file: false
           release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
       - uses: krashidbuilt/actions/typescript/publish@v1
@@ -118,7 +134,16 @@ jobs:
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
           use_oidc: ${{ inputs.use_oidc }}
           skip_build: ${{ inputs.skip_build }}
-          # The number the versioning step just computed. Without this, publish
-          # would ship whatever package.json still says — the previous version
-          # under the new tag — unless update_version_file pushed a commit first.
+          # The number computed above. Without this, publish would ship whatever
+          # package.json still says — the previous version under the new tag.
           version: ${{ steps.version.outputs.version }}
+      - name: Record the release
+        uses: krashidbuilt/actions/versioning@v1
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          github_token: ${{ github.token }}
+          create_tag: true
+          create_release: ${{ inputs.create_release }}
+          update_version_file: ${{ inputs.update_version_file }}
+          release_prerelease: ${{ github.ref_name != inputs.production_branch }}
+          prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
