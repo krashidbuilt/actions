@@ -9,6 +9,7 @@
  * typescript/setup write the token into .npmrc first.
  */
 
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as core from "@actions/core";
 import * as exec from "@actions/exec";
@@ -21,6 +22,8 @@ interface PublishInputs {
   tag: string;
   skipBuild: boolean;
   useOidc: boolean;
+  version: string;
+  failIfExists: boolean;
 }
 
 function getInputs(): PublishInputs {
@@ -31,7 +34,44 @@ function getInputs(): PublishInputs {
     tag,
     skipBuild: core.getInput("skip_build") === "true",
     useOidc: core.getInput("use_oidc") !== "false",
+    version: core.getInput("version"),
+    failIfExists: core.getInput("fail_if_exists") !== "false",
   };
+}
+
+/** Write an externally chosen version into package.json before publishing. */
+function writePackageVersion(workingDir: string, version: string): void {
+  const path = resolve(workingDir, "package.json");
+  const pkg = JSON.parse(readFileSync(path, "utf-8"));
+  pkg.version = version;
+  writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
+  logger.info(`Wrote version ${version} into package.json`);
+}
+
+/**
+ * Ask the registry whether this exact version is already published.
+ *
+ * `npm view <pkg>@<version> version` prints the version when it exists and
+ * nothing when it does not, so a non-empty stdout is the answer. A failing
+ * command means "not there" (or unreachable) — treated as publishable, since
+ * the publish itself is the real gate.
+ */
+async function versionExists(packageName: string, version: string): Promise<boolean> {
+  let output = "";
+  try {
+    await exec.exec("npm", ["view", `${packageName}@${version}`, "version"], {
+      silent: true,
+      ignoreReturnCode: true,
+      listeners: {
+        stdout: (data) => {
+          output += data.toString();
+        },
+      },
+    });
+  } catch {
+    return false;
+  }
+  return output.trim().length > 0;
 }
 
 export async function run(): Promise<void> {
@@ -46,8 +86,24 @@ export async function run(): Promise<void> {
 
     // Read package info
     const pkg = readPackageJson(workingDir);
-    const version = pkg.version || "unknown";
+    // An explicit version wins: the versioning action picks the number from the
+    // conventional commits, and publishing it straight from here means the repo
+    // does not need a release commit pushed back to its own branch.
+    const version = inputs.version || pkg.version || "unknown";
     logger.info(`Package: ${pkg.name}@${version}`);
+
+    if (inputs.failIfExists && pkg.name && version !== "unknown") {
+      if (await versionExists(pkg.name, version)) {
+        throw new Error(
+          `${pkg.name}@${version} is already in the registry. Publishing would be rejected; bump the version or check whether an earlier run already shipped it.`,
+        );
+      }
+      logger.info(`${pkg.name}@${version} is not in the registry yet`);
+    }
+
+    if (inputs.version) {
+      writePackageVersion(workingDir, inputs.version);
+    }
 
     // Detect package manager for build step
     const pmInfo = detectPackageManager(workingDir, {

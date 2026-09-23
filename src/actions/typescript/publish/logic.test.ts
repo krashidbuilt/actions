@@ -7,6 +7,11 @@ const { mockExec, mockGetInput, mockSetOutput, mockSetFailed } = vi.hoisted(() =
   mockSetFailed: vi.fn(),
 }));
 
+const { mockReadFileSync, mockWriteFileSync } = vi.hoisted(() => ({
+  mockReadFileSync: vi.fn(() => JSON.stringify({ name: "@krashidbuilt/pkg", version: "1.0.0" })),
+  mockWriteFileSync: vi.fn(),
+}));
+
 const { mockWorkingDirectory, mockDetectPackageManager, mockGetRunCommand, mockReadPackageJson } = vi.hoisted(() => ({
   mockWorkingDirectory: vi.fn(() => "."),
   mockDetectPackageManager: vi.fn(() => ({
@@ -39,6 +44,11 @@ vi.mock("@actions/core", () => ({
 
 vi.mock("@actions/exec", () => ({
   exec: mockExec,
+}));
+
+vi.mock("node:fs", () => ({
+  readFileSync: mockReadFileSync,
+  writeFileSync: mockWriteFileSync,
 }));
 
 vi.mock("../../../core/index.js", () => ({
@@ -110,6 +120,73 @@ describe("typescript/publish", () => {
       // Build should NOT run
       const buildCalls = mockExec.mock.calls.filter((call) => call[0] === "bun" && call[1]?.[1] === "build");
       expect(buildCalls).toHaveLength(0);
+    });
+  });
+
+  describe("version input", () => {
+    it("publishes package.json's own version when none is given", async () => {
+      await run();
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "1.0.0");
+    });
+
+    it("writes an externally chosen version into package.json before publishing", async () => {
+      mockGetInput.mockImplementation((name: string) => {
+        if (name === "tag") return "latest";
+        if (name === "version") return "2.3.4";
+        return "";
+      });
+
+      await run();
+
+      const [path, contents] = mockWriteFileSync.mock.calls[0] ?? [];
+      expect(String(path)).toContain("package.json");
+      expect(JSON.parse(String(contents)).version).toBe("2.3.4");
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "2.3.4");
+    });
+
+    it("fails before publishing when the version is already in the registry", async () => {
+      mockGetInput.mockImplementation((name: string) => {
+        if (name === "tag") return "latest";
+        if (name === "version") return "9.9.9";
+        return "";
+      });
+      mockExec.mockImplementation(
+        async (cmd: string, args?: string[], options?: { listeners?: { stdout?: (d: Buffer) => void } }) => {
+          if (cmd === "npm" && args?.[0] === "view") {
+            options?.listeners?.stdout?.(Buffer.from("9.9.9\n"));
+          }
+          return 0;
+        },
+      );
+
+      await run();
+
+      expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining("already in the registry"));
+      const publishCall = mockExec.mock.calls.find((call) => call[1]?.[0] === "publish");
+      expect(publishCall).toBeUndefined();
+    });
+
+    it("publishes when the registry has no such version", async () => {
+      mockExec.mockImplementation(async () => 0);
+
+      await run();
+
+      expect(mockSetFailed).not.toHaveBeenCalled();
+      expect(mockExec.mock.calls.some((call) => call[1]?.[0] === "publish")).toBe(true);
+    });
+
+    it("skips the registry check when fail_if_exists is false", async () => {
+      mockGetInput.mockImplementation((name: string) => {
+        if (name === "tag") return "latest";
+        if (name === "fail_if_exists") return "false";
+        return "";
+      });
+
+      await run();
+
+      expect(mockExec.mock.calls.some((call) => call[1]?.[0] === "view")).toBe(false);
     });
   });
 
@@ -378,8 +455,14 @@ describe("typescript/publish", () => {
         scripts: { build: "tsc -b" },
       });
 
-      // Build exec call fails
-      mockExec.mockRejectedValueOnce(new Error("build compilation error"));
+      // Target the build call itself: the registry existence check now runs
+      // before it, so "reject the first exec" would fail the wrong command.
+      mockExec.mockImplementation(async (cmd: string, args?: string[]) => {
+        if (cmd === "bun" && args?.[1] === "build") {
+          throw new Error("build compilation error");
+        }
+        return 0;
+      });
 
       await run();
 
