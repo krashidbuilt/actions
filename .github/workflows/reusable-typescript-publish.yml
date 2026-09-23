@@ -24,6 +24,34 @@ on:
       registry_scope:
         type: string
         default: "@krashidbuilt"
+      registry_url:
+        # Every @krashidbuilt package lives in the Gitea registry, so that is the
+        # default — it matches registry_scope above. Publishing to npmjs.org is
+        # the opt-in: set this to https://registry.npmjs.org/ and use_oidc: true.
+        type: string
+        default: "https://git.dsm.krashidbuilt.com/api/packages/krashidbuilt/npm/"
+      use_oidc:
+        # npmjs trusted publishing, which the Gitea registry has no token
+        # exchange for. Defaults off to match registry_url; repos publishing to
+        # npmjs.org turn it on and drop NPM_TOKEN.
+        type: boolean
+        default: false
+      update_version_file:
+        # Tag-only mode leaves package.json alone, so publish would ship the
+        # PREVIOUS version under the new tag. Any repo letting this workflow
+        # pick the version must set this true.
+        type: boolean
+        default: false
+      production_branch:
+        # The branch whose releases are final rather than prereleases. Repos
+        # that live on a single line (main) name it here.
+        type: string
+        default: "production"
+      skip_build:
+        # Source-only packages (bin points at .ts) have a build script that
+        # compiles a standalone binary which never ships in the tarball.
+        type: boolean
+        default: false
       create_release:
         type: boolean
         default: true
@@ -34,6 +62,11 @@ on:
 jobs:
   publish:
     name: Publish
+    # With update_version_file: true the versioning step pushes its own
+    # "chore(release): vX.Y.Z" commit, which lands on the same branch that
+    # triggered this run. Without this guard that push re-triggers the workflow
+    # and the repo releases itself in a loop.
+    if: ${{ !startsWith(github.event.head_commit.message || '', 'chore(release):') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -51,6 +84,8 @@ jobs:
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
           registry_scope: ${{ inputs.registry_scope }}
+          registry_url: ${{ inputs.registry_url }}
+          registry_auth_token: ${{ secrets.NPM_TOKEN }}
       - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
@@ -67,11 +102,12 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
           create_release: ${{ inputs.create_release }}
-          update_version_file: false
-          release_prerelease: ${{ github.ref_name != 'production' }}
+          update_version_file: ${{ inputs.update_version_file }}
+          release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
       - uses: krashidbuilt/actions/typescript/publish@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
-          token: ${{ secrets.NPM_TOKEN }}
+          use_oidc: ${{ inputs.use_oidc }}
+          skip_build: ${{ inputs.skip_build }}

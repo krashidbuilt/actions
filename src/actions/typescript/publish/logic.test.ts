@@ -113,6 +113,57 @@ describe("typescript/publish", () => {
     });
   });
 
+  describe("use_oidc", () => {
+    it("publishes with provenance and strips NODE_AUTH_TOKEN by default", async () => {
+      process.env.NODE_AUTH_TOKEN = "should-not-reach-npm";
+
+      await run();
+
+      const publishCall = mockExec.mock.calls.find((call) => call[1]?.[0] === "publish");
+      expect(publishCall?.[1]).toEqual(["publish", "--provenance", "--access", "public", "--tag", "latest"]);
+      expect(publishCall?.[2]?.env).toBeDefined();
+      expect(publishCall?.[2]?.env?.NODE_AUTH_TOKEN).toBeUndefined();
+      expect(publishCall?.[2]?.env?.BUN_AUTH_TOKEN).toBeUndefined();
+
+      delete process.env.NODE_AUTH_TOKEN;
+    });
+
+    it("publishes with the registry token and no npmjs-only flags when use_oidc is false", async () => {
+      mockGetInput.mockImplementation((name: string) => {
+        if (name === "tag") return "latest";
+        if (name === "use_oidc") return "false";
+        return "";
+      });
+
+      await run();
+
+      const publishCall = mockExec.mock.calls.find((call) => call[1]?.[0] === "publish");
+      // --provenance and --access are npmjs-only; Gitea's registry rejects them.
+      expect(publishCall?.[1]).toEqual(["publish", "--tag", "latest"]);
+      // No env override, so NODE_AUTH_TOKEN from the runner survives and authenticates.
+      expect(publishCall?.[2]).toEqual({ cwd: expect.any(String) });
+    });
+
+    it("still reports the published version on the token path", async () => {
+      mockGetInput.mockImplementation((name: string) => {
+        if (name === "tag") return "alpha";
+        if (name === "use_oidc") return "false";
+        return "";
+      });
+      mockReadPackageJson.mockReturnValue({
+        name: "@krashidbuilt/googlecli",
+        version: "0.12.0",
+        scripts: {},
+      });
+
+      await run();
+
+      expect(mockSetOutput).toHaveBeenCalledWith("published", "true");
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "0.12.0");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "alpha");
+    });
+  });
+
   describe("build step", () => {
     it("runs build when skip_build is false and build script exists", async () => {
       mockReadPackageJson.mockReturnValue({
