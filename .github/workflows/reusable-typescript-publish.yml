@@ -128,7 +128,14 @@ jobs:
           update_version_file: false
           release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
+      # An empty version means versioning found no bump-worthy commits since the
+      # last tag, and there is nothing to release. Publishing anyway is not a
+      # no-op: publish falls back to package.json, which on a repo that does not
+      # carry release commits still holds the version BEFORE the last release —
+      # so a re-run with no new commits republished sentrycli 0.1.0 over the top
+      # of 0.1.1 and moved the latest dist-tag backwards.
       - uses: krashidbuilt/actions/typescript/publish@v1
+        if: steps.version.outputs.version != ''
         with:
           working_directory: ${{ inputs.working_directory }}
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
@@ -137,8 +144,12 @@ jobs:
           # The number computed above. Without this, publish would ship whatever
           # package.json still says — the previous version under the new tag.
           version: ${{ steps.version.outputs.version }}
+      - name: Nothing to release
+        if: steps.version.outputs.version == ''
+        run: echo "No bump-worthy commits since the last tag — skipping publish."
       - name: Record the release
         uses: krashidbuilt/actions/versioning@v1
+        if: steps.version.outputs.version != ''
         with:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
