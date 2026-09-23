@@ -1,8 +1,12 @@
 /**
  * TypeScript Publish Action - Business Logic
  *
- * Builds and publishes an npm package using npm trusted publishing (OIDC).
- * Requires `permissions: { id-token: write }` in the calling workflow.
+ * Builds and publishes an npm package.
+ *
+ * Two auth paths: npm trusted publishing (OIDC), which needs
+ * `permissions: { id-token: write }` in the calling workflow, and token auth
+ * for registries with no OIDC token exchange — set `use_oidc: false` and let
+ * typescript/setup write the token into .npmrc first.
  */
 
 import { resolve } from "node:path";
@@ -16,6 +20,7 @@ interface PublishInputs {
   workingDirectory: string;
   tag: string;
   skipBuild: boolean;
+  useOidc: boolean;
 }
 
 function getInputs(): PublishInputs {
@@ -25,6 +30,7 @@ function getInputs(): PublishInputs {
     workingDirectory: common.workingDirectory(),
     tag,
     skipBuild: core.getInput("skip_build") === "true",
+    useOidc: core.getInput("use_oidc") !== "false",
   };
 }
 
@@ -33,7 +39,7 @@ export async function run(): Promise<void> {
     const inputs = getInputs();
     const workingDir = resolve(inputs.workingDirectory);
 
-    logger.info("Publishing npm package via OIDC trusted publishing", {
+    logger.info(`Publishing npm package via ${inputs.useOidc ? "OIDC trusted publishing" : "registry token"}`, {
       workingDirectory: workingDir,
       tag: inputs.tag,
     });
@@ -57,21 +63,31 @@ export async function run(): Promise<void> {
       logger.info("Build completed");
     }
 
-    // Publish via npm with OIDC provenance (trusted publishing)
-    // npm CLI 11.5.1+ auto-detects OIDC environment and handles token exchange.
-    // NODE_AUTH_TOKEN must NOT be set — it would override OIDC.
     logger.info(`Publishing with tag: ${inputs.tag}`);
-    const publishEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (key !== "NODE_AUTH_TOKEN" && key !== "BUN_AUTH_TOKEN" && value !== undefined) {
-        publishEnv[key] = value;
-      }
-    }
 
-    await exec.exec("npm", ["publish", "--provenance", "--access", "public", "--tag", inputs.tag], {
-      cwd: workingDir,
-      env: publishEnv,
-    });
+    if (inputs.useOidc) {
+      // Publish via npm with OIDC provenance (trusted publishing)
+      // npm CLI 11.5.1+ auto-detects OIDC environment and handles token exchange.
+      // NODE_AUTH_TOKEN must NOT be set — it would override OIDC.
+      const publishEnv: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (key !== "NODE_AUTH_TOKEN" && key !== "BUN_AUTH_TOKEN" && value !== undefined) {
+          publishEnv[key] = value;
+        }
+      }
+
+      await exec.exec("npm", ["publish", "--provenance", "--access", "public", "--tag", inputs.tag], {
+        cwd: workingDir,
+        env: publishEnv,
+      });
+    } else {
+      // Token auth. Keep NODE_AUTH_TOKEN — it is what authenticates here — and
+      // drop --provenance/--access: both are npmjs-only, and access is already
+      // declared by the package's own publishConfig.
+      await exec.exec("npm", ["publish", "--tag", inputs.tag], {
+        cwd: workingDir,
+      });
+    }
 
     core.setOutput("published", "true");
     core.setOutput("version", version);

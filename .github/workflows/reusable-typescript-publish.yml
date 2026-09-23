@@ -24,6 +24,26 @@ on:
       registry_scope:
         type: string
         default: "@krashidbuilt"
+      registry_url:
+        type: string
+        default: "https://registry.npmjs.org/"
+      use_oidc:
+        # npmjs trusted publishing. The Gitea package registry has no OIDC token
+        # exchange, so repos publishing there pass false and authenticate with
+        # NPM_TOKEN instead.
+        type: boolean
+        default: true
+      update_version_file:
+        # Tag-only mode leaves package.json alone, so publish would ship the
+        # PREVIOUS version under the new tag. Any repo letting this workflow
+        # pick the version must set this true.
+        type: boolean
+        default: false
+      production_branch:
+        # The branch whose releases are final rather than prereleases. Repos
+        # that live on a single line (main) name it here.
+        type: string
+        default: "production"
       create_release:
         type: boolean
         default: true
@@ -51,6 +71,8 @@ jobs:
           bun_version: ${{ inputs.bun_version }}
           working_directory: ${{ inputs.working_directory }}
           registry_scope: ${{ inputs.registry_scope }}
+          registry_url: ${{ inputs.registry_url }}
+          registry_auth_token: ${{ secrets.NPM_TOKEN }}
       - uses: krashidbuilt/actions/typescript/install-dependencies@v1
         with:
           working_directory: ${{ inputs.working_directory }}
@@ -67,11 +89,11 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
           github_token: ${{ github.token }}
           create_release: ${{ inputs.create_release }}
-          update_version_file: false
-          release_prerelease: ${{ github.ref_name != 'production' }}
+          update_version_file: ${{ inputs.update_version_file }}
+          release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
       - uses: krashidbuilt/actions/typescript/publish@v1
         with:
           working_directory: ${{ inputs.working_directory }}
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
-          token: ${{ secrets.NPM_TOKEN }}
+          use_oidc: ${{ inputs.use_oidc }}

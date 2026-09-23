@@ -20,6 +20,11 @@ export const config = defineAction({
       description: "Skip running build before publish",
       default: "false",
     },
+    use_oidc: {
+      description:
+        "Publish with npm trusted publishing (OIDC). Set false for a registry that has no OIDC token exchange — the Gitea package registry — to publish with the token typescript/setup wrote into .npmrc",
+      default: "true",
+    },
   },
   outputs: {
     published: {
