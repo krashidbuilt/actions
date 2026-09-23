@@ -18,6 +18,58 @@ jobs:
       working_directory: daemon
 ```
 
+## The standard for CLI and library repos
+
+Every repo here follows one of two shapes. Pick by whether the repo is a package
+other things install.
+
+**Published package** — `package.json` has `publishConfig.registry` pointing at
+the Gitea registry and is not `private`. Gets `.gitea/workflows/publish.yml`:
+
+```yaml
+name: Publish
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  publish:
+    uses: krashidbuilt/actions/.github/workflows/reusable-typescript-publish.yml@v1
+    with:
+      production_branch: main
+      skip_build: true   # false if the package publishes a built dist/
+      bun_version: "1.3.13"
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+```
+
+Merging to `main` then runs verify, computes the version from the conventional
+commits since the last tag, tags it, and publishes. Nothing is pushed back to
+the branch — the tags are the release history.
+
+**Private or source-only** — `private: true`, run with `bun run src/index.ts`.
+Gets `.gitea/workflows/verify.yml` calling `reusable-typescript-verify.yml@v1`
+on push and pull_request. Same checks, no publish, no secret.
+
+### Before wiring a repo up
+
+- **Seed a tag matching `package.json`** (`git tag v0.1.0 && git push origin v0.1.0`).
+  With no tags the versioning action reads the last 20 commits, and a single
+  `!:` or `BREAKING CHANGE` in that window makes the first release `1.0.0`.
+- **Check `has_actions`.** A repo can have Actions disabled, in which case the
+  workflow sits on `main` and nothing ever runs, with no error anywhere —
+  imessagecli was in that state. `curl -H "Authorization: token $T"
+  $API/repos/$OWNER/$REPO | jq .has_actions`, and PATCH it to `true`.
+- **`skip_build: true` unless the package publishes a build.** It governs the
+  verify build as well, so a broken or vestigial binary-compile script does not
+  fail CI for an artifact nobody ships.
+- **Expect the first run to fail.** Turning CI on for the first time surfaces
+  whatever was never checked — lint debt in bankcli and qbcli, a build script
+  that had never worked in airbnbcli and sagacli.
+
+Repos that are neither: printctl (Python) byte-compiles its scripts, slackcli
+carries its upstream fork's own CI.
+
 ## Reusable Workflows
 
 Pre-composed pipelines that consumer repos call with minimal configuration.
