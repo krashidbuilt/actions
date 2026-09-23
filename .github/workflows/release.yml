@@ -35,29 +35,39 @@ jobs:
           git push origin "$NEXT"
           git push origin "$MAJOR" --force
 
-  # act caches a remote action by REF NAME and never re-fetches when a floating
-  # tag moves, so a runner keeps serving whatever it cloned the first time it saw
-  # krashidbuilt/actions@v1. On 2026-09-23 two promotes moved v1 on the server
-  # and changed nothing the runners executed: googlecli published with pre-fix
-  # setup code, and countertop-quote had been deploying v1.0.9 actions. Clearing
-  # the cache after the tag move is what makes moving the tag mean something.
-  #
-  # One job per runner rather than a matrix: run 495 shipped this as a matrix
-  # over `runs-on: ${{ matrix.host }}` and Gitea never scheduled the job at all —
-  # it resolves runs-on labels before expanding the matrix, so the job vanished
-  # silently rather than failing. Static labels are the only form that schedules.
-  #
-  # These run on the HOST runners because the cache lives in the runner process's
-  # $HOME; a job inside a container cannot see it, and the linux runners share
-  # their Mac's cache. continue-on-error everywhere: a sleeping machine costs a
-  # stale cache, not a failed release.
-  clear-cache-studio:
-    name: Clear stale action cache (Mac Studio)
+  clear-runner-action-cache:
+    name: Clear stale action cache (${{ matrix.host }})
+    # act caches a remote action by REF NAME and never re-fetches when a
+    # floating tag moves, so every runner keeps serving whatever it cloned the
+    # first time it saw krashidbuilt/actions@v1. Two promotes on 2026-09-23
+    # moved v1 on the server and changed nothing the runners executed: googlecli
+    # kept publishing with pre-fix setup code, and countertop-quote's deploy had
+    # been running v1.0.9 actions for the same reason. Clearing the cache here
+    # is what makes moving the tag mean something.
+    #
+    # Runs on the HOST runners, not the container ones: the cache lives in the
+    # runner process's $HOME on the Mac, and a job inside a docker container
+    # cannot see it. The linux runners share their Mac's cache, so clearing the
+    # host clears both.
+    #
+    # Verified on 2026-09-23: all four legs ran and reported success. (A brief
+    # detour replaced this with four explicit jobs after /actions/jobs appeared
+    # to show the matrix job missing — that endpoint does not return newest
+    # first, so the "missing" jobs were June's. /actions/tasks is the one that
+    # answers "what just ran".)
     needs: create-tag
     if: github.ref_name == 'production'
+    # A machine that is asleep or offline must not hold up a release, and a
+    # failure here costs a stale cache, not a bad release.
     continue-on-error: true
     timeout-minutes: 10
-    runs-on: studio-host
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every runner that executes jobs on a host filesystem. The NAS runs
+        # countertop-quote deploys, so it holds a cache of this repo too.
+        host: [studio-host, mbp2023-host, mbp2024-host, self-hosted]
+    runs-on: ${{ matrix.host }}
     steps:
       - name: Drop cached copies of this repo
         run: |
@@ -80,100 +90,7 @@ jobs:
                 ;;
             esac
           done
-          echo "cleared $removed cached copies of krashidbuilt/actions"
-
-  clear-cache-mbp2023:
-    name: Clear stale action cache (Bjorn's MBP 2023)
-    needs: create-tag
-    if: github.ref_name == 'production'
-    continue-on-error: true
-    timeout-minutes: 10
-    runs-on: mbp2023-host
-    steps:
-      - name: Drop cached copies of this repo
-        run: |
-          CACHE="${HOME}/.cache/act"
-          if [ ! -d "$CACHE" ]; then
-            echo "no act cache at $CACHE"
-            exit 0
-          fi
-          removed=0
-          for d in "$CACHE"/*/; do
-            d="${d%/}"
-            [ -d "$d/.git" ] || continue
-            url="$(git -C "$d" config --get remote.origin.url 2>/dev/null || true)"
-            case "$url" in
-              *krashidbuilt/actions*)
-                sha="$(git -C "$d" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-                rm -rf "$d"
-                echo "cleared $(basename "$d") (was $sha)"
-                removed=$((removed + 1))
-                ;;
-            esac
-          done
-          echo "cleared $removed cached copies of krashidbuilt/actions"
-
-  clear-cache-mbp2024:
-    name: Clear stale action cache (Ben's MBP 2024)
-    needs: create-tag
-    if: github.ref_name == 'production'
-    continue-on-error: true
-    timeout-minutes: 10
-    runs-on: mbp2024-host
-    steps:
-      - name: Drop cached copies of this repo
-        run: |
-          CACHE="${HOME}/.cache/act"
-          if [ ! -d "$CACHE" ]; then
-            echo "no act cache at $CACHE"
-            exit 0
-          fi
-          removed=0
-          for d in "$CACHE"/*/; do
-            d="${d%/}"
-            [ -d "$d/.git" ] || continue
-            url="$(git -C "$d" config --get remote.origin.url 2>/dev/null || true)"
-            case "$url" in
-              *krashidbuilt/actions*)
-                sha="$(git -C "$d" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-                rm -rf "$d"
-                echo "cleared $(basename "$d") (was $sha)"
-                removed=$((removed + 1))
-                ;;
-            esac
-          done
-          echo "cleared $removed cached copies of krashidbuilt/actions"
-
-  clear-cache-nas:
-    name: Clear stale action cache (NAS)
-    needs: create-tag
-    if: github.ref_name == 'production'
-    continue-on-error: true
-    timeout-minutes: 10
-    runs-on: self-hosted
-    steps:
-      - name: Drop cached copies of this repo
-        run: |
-          CACHE="${HOME}/.cache/act"
-          if [ ! -d "$CACHE" ]; then
-            echo "no act cache at $CACHE"
-            exit 0
-          fi
-          removed=0
-          for d in "$CACHE"/*/; do
-            d="${d%/}"
-            [ -d "$d/.git" ] || continue
-            url="$(git -C "$d" config --get remote.origin.url 2>/dev/null || true)"
-            case "$url" in
-              *krashidbuilt/actions*)
-                sha="$(git -C "$d" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-                rm -rf "$d"
-                echo "cleared $(basename "$d") (was $sha)"
-                removed=$((removed + 1))
-                ;;
-            esac
-          done
-          echo "cleared $removed cached copies of krashidbuilt/actions"
+          echo "cleared $removed cached copies of krashidbuilt/actions on ${{ matrix.host }}"
 
   update-major-tag:
     name: Update Major Version Tag
