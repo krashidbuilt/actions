@@ -20,6 +20,15 @@ export const config = defineAction({
       description: "Skip running build before publish",
       default: "false",
     },
+    version: {
+      description:
+        "Version to publish. When set it is written into package.json first, so an external versioner (krashidbuilt/actions/versioning) can pick the number without the repo having to carry a release commit",
+    },
+    fail_if_exists: {
+      description:
+        "Fail if the resolved version is already in the registry, instead of letting the publish be rejected",
+      default: "true",
+    },
     use_oidc: {
       description:
         "Publish with npm trusted publishing (OIDC). Set false for a registry that has no OIDC token exchange — the Gitea package registry — to publish with the token typescript/setup wrote into .npmrc",

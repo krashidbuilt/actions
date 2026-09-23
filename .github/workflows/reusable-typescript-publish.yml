@@ -37,9 +37,11 @@ on:
         type: boolean
         default: false
       update_version_file:
-        # Tag-only mode leaves package.json alone, so publish would ship the
-        # PREVIOUS version under the new tag. Any repo letting this workflow
-        # pick the version must set this true.
+        # Whether the repo carries a release commit. Off by default: publish
+        # receives the computed version directly (see the version input below)
+        # and writes it into package.json for the publish only, so nothing has
+        # to be pushed back to the branch that triggered the run. Turn it on if
+        # you want package.json in the repo to track releases.
         type: boolean
         default: false
       production_branch:
@@ -111,3 +113,7 @@ jobs:
           tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
           use_oidc: ${{ inputs.use_oidc }}
           skip_build: ${{ inputs.skip_build }}
+          # The number the versioning step just computed. Without this, publish
+          # would ship whatever package.json still says — the previous version
+          # under the new tag — unless update_version_file pushed a commit first.
+          version: ${{ steps.version.outputs.version }}
