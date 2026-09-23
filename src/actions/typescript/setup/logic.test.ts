@@ -175,6 +175,64 @@ describe("typescript/setup", () => {
       expect(mockExec).toHaveBeenCalledWith("npm", ["config", "set", "//registry.npmjs.org/:_authToken", "my-token"]);
     });
 
+    it("writes a path-scoped auth key for a registry served under a path", async () => {
+      mockRegistryUrl.mockReturnValue("https://git.dsm.krashidbuilt.com/api/packages/krashidbuilt/npm/");
+      mockAuthToken.mockReturnValue("my-token");
+      mockExec.mockImplementation(
+        async (
+          cmd: string,
+          args?: string[],
+          options?: { listeners?: { stdout?: (data: Buffer) => void }; silent?: boolean },
+        ) => {
+          if ((cmd === "node" || cmd === "bun") && args?.[0] === "--version") {
+            options?.listeners?.stdout?.(Buffer.from("v22.0.0"));
+          }
+          return 0;
+        },
+      );
+
+      await run();
+
+      // The key npm actually looks up when publishing to that URL.
+      expect(mockExec).toHaveBeenCalledWith("npm", [
+        "config",
+        "set",
+        "//git.dsm.krashidbuilt.com/api/packages/krashidbuilt/npm/:_authToken",
+        "my-token",
+      ]);
+      // Host key kept as well, for anything resolving at the root.
+      expect(mockExec).toHaveBeenCalledWith("npm", [
+        "config",
+        "set",
+        "//git.dsm.krashidbuilt.com/:_authToken",
+        "my-token",
+      ]);
+    });
+
+    it("does not write the host key twice for a root registry", async () => {
+      mockRegistryUrl.mockReturnValue("https://registry.npmjs.org/");
+      mockAuthToken.mockReturnValue("my-token");
+      mockExec.mockImplementation(
+        async (
+          cmd: string,
+          args?: string[],
+          options?: { listeners?: { stdout?: (data: Buffer) => void }; silent?: boolean },
+        ) => {
+          if ((cmd === "node" || cmd === "bun") && args?.[0] === "--version") {
+            options?.listeners?.stdout?.(Buffer.from("v22.0.0"));
+          }
+          return 0;
+        },
+      );
+
+      await run();
+
+      const authCalls = mockExec.mock.calls.filter(
+        (call) => call[0] === "npm" && String(call[1]?.[2]).endsWith(":_authToken"),
+      );
+      expect(authCalls).toHaveLength(1);
+    });
+
     it("skips registry configuration when no auth token", async () => {
       mockAuthToken.mockReturnValue("");
 

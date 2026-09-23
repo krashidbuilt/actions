@@ -232,8 +232,20 @@ async function configureRegistry(inputs: SetupInputs): Promise<void> {
 
   await exec.exec("npm", ["config", "set", `${inputs.registryScope}:registry`, inputs.registryUrl]);
 
-  const registryHost = new URL(inputs.registryUrl).host;
-  await exec.exec("npm", ["config", "set", `//${registryHost}/:_authToken`, inputs.registryAuthToken]);
+  // npm keys credentials by the "nerf dart" of the registry URL — host AND
+  // path, with a trailing slash. A host-only key works for registry.npmjs.org
+  // because its path IS "/", but a path-scoped registry
+  // (https://git.dsm.krashidbuilt.com/api/packages/<org>/npm/) never matches it
+  // and publish fails with ENEEDAUTH after building the tarball. Write the
+  // path-scoped key, plus the host key for anything resolving at the root.
+  const registryUrl = new URL(inputs.registryUrl);
+  const registryPath = registryUrl.pathname.endsWith("/") ? registryUrl.pathname : `${registryUrl.pathname}/`;
+  const nerfDart = `//${registryUrl.host}${registryPath}`;
+
+  await exec.exec("npm", ["config", "set", `${nerfDart}:_authToken`, inputs.registryAuthToken]);
+  if (nerfDart !== `//${registryUrl.host}/`) {
+    await exec.exec("npm", ["config", "set", `//${registryUrl.host}/:_authToken`, inputs.registryAuthToken]);
+  }
 
   logger.info("Registry authentication configured");
 }
