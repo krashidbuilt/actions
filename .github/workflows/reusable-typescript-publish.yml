@@ -25,14 +25,17 @@ on:
         type: string
         default: "@krashidbuilt"
       registry_url:
+        # Every @krashidbuilt package lives in the Gitea registry, so that is the
+        # default — it matches registry_scope above. Publishing to npmjs.org is
+        # the opt-in: set this to https://registry.npmjs.org/ and use_oidc: true.
         type: string
-        default: "https://registry.npmjs.org/"
+        default: "https://git.dsm.krashidbuilt.com/api/packages/krashidbuilt/npm/"
       use_oidc:
-        # npmjs trusted publishing. The Gitea package registry has no OIDC token
-        # exchange, so repos publishing there pass false and authenticate with
-        # NPM_TOKEN instead.
+        # npmjs trusted publishing, which the Gitea registry has no token
+        # exchange for. Defaults off to match registry_url; repos publishing to
+        # npmjs.org turn it on and drop NPM_TOKEN.
         type: boolean
-        default: true
+        default: false
       update_version_file:
         # Tag-only mode leaves package.json alone, so publish would ship the
         # PREVIOUS version under the new tag. Any repo letting this workflow
