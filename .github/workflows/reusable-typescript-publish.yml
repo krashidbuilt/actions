@@ -54,6 +54,11 @@ on:
 jobs:
   publish:
     name: Publish
+    # With update_version_file: true the versioning step pushes its own
+    # "chore(release): vX.Y.Z" commit, which lands on the same branch that
+    # triggered this run. Without this guard that push re-triggers the workflow
+    # and the repo releases itself in a loop.
+    if: ${{ !startsWith(github.event.head_commit.message || '', 'chore(release):') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
