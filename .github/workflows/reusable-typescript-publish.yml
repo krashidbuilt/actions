@@ -51,7 +51,11 @@ on:
         default: "production"
       skip_build:
         # Source-only packages (bin points at .ts) have a build script that
-        # compiles a standalone binary which never ships in the tarball.
+        # compiles a standalone binary which never ships in the tarball —
+        # airbnbcli and sagacli cannot even build theirs, because bun build
+        # --compile will not bundle playwright's dynamic chromium-bidi requires.
+        # This governs the verify step's build as well as publish's: if the
+        # artifact is not published, CI has no reason to produce it.
         type: boolean
         default: false
       create_release:
@@ -98,6 +102,7 @@ jobs:
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
+          run_build: ${{ !inputs.skip_build }}
       - uses: krashidbuilt/actions/versioning@v1
         id: version
         with:
