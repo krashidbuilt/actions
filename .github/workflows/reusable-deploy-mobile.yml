@@ -11,7 +11,7 @@ name: Reusable Deploy Mobile
 #     create_release:         ${{ github.ref_name == 'production' && 'true' || 'false' }}
 #
 # Boolean-ish inputs (auto_submit, refresh_ad_hoc_profile, create_release,
-# run_verify) accept EITHER a string ('true'/'false', any case, or yes/on/1) OR a
+# run_verify, run_build) accept EITHER a string ('true'/'false', any case, or yes/on/1) OR a
 # YAML boolean literal. They're declared `type: string` (the permissive type that
 # sidesteps act_runner's `type: boolean` coercion bug) and run through a single
 # Normalize step that canonicalizes them to 'true'/'false' — so every downstream
@@ -19,6 +19,12 @@ name: Reusable Deploy Mobile
 #
 # Defaults are SAFE: an under-specified caller does a plain ad-hoc `preview`
 # build with no store submit and no version bump — never an accidental release.
+#
+# Versioning only (no build): set `platforms: none` or `run_build: 'false'`
+# together with `create_release: 'true'`. A caller uses that on its integration
+# branch to tag + sync version files on every push, and builds from the
+# promotion branches with `create_release: 'false'` — fifth-gear-tech-native-app
+# versions on develop and builds a two-app matrix on staging/production.
 #
 # EAS notes:
 # - eas-cli via npx with EXPO_TOKEN in env (expo/expo-github-action isn't mirrored
@@ -29,6 +35,14 @@ name: Reusable Deploy Mobile
 #   (eas device:create) on the Apple portal and refreshes the ad-hoc profile,
 #   fully OTA, using the ASC API key stored in EAS. Use it for ad-hoc/internal
 #   builds; leave off for store/production profiles (no device list).
+# - EXPO_NO_CAPABILITY_SYNC=1 on both build steps: CI never mutates Apple
+#   portal capabilities. eas-cli 24 syncs the app's entitlements (App Groups,
+#   push, ...) to the bundle identifier before every iOS build, and on
+#   2026-10-14 the fifth-gear-tech run died on Apple rejecting that APP_GROUPS
+#   sync. Capabilities are enabled by hand in the portal once, during the
+#   interactive `eas credentials -p ios` setup; a non-interactive build then
+#   only signs. This is separate from --refresh-ad-hoc-provisioning-profile,
+#   which still registers devices and regenerates the ad-hoc profile.
 
 on:
   workflow_call:
@@ -48,7 +62,7 @@ on:
         type: string
         default: "preview"
       platforms:
-        description: "Platforms to build (ios, android, all)"
+        description: "Platforms to build (ios, android, all, none). none = versioning only, same as run_build 'false'"
         type: string
         default: "ios"
       auto_submit:
@@ -65,6 +79,10 @@ on:
         default: "false"
       run_verify:
         description: "'true' to run npm run verify before building"
+        type: string
+        default: "true"
+      run_build:
+        description: "'false' to skip both eas build steps (versioning only); platforms 'none' does the same"
         type: string
         default: "true"
       version_sync_command:
@@ -92,13 +110,28 @@ jobs:
           REFRESH: ${{ inputs.refresh_ad_hoc_profile }}
           CREATE_RELEASE: ${{ inputs.create_release }}
           RUN_VERIFY: ${{ inputs.run_verify }}
+          RUN_BUILD: ${{ inputs.run_build }}
+          PLATFORMS: ${{ inputs.platforms }}
         run: |
           b() { case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in true|yes|on|1) echo true;; *) echo false;; esac; }
+          # Which eas build steps run: run_build must be true AND platforms must
+          # name the platform. platforms=none (or anything unknown) builds nothing.
+          RUN_BUILD_N="$(b "$RUN_BUILD")"
+          PLATFORMS_N="$(printf '%s' "${PLATFORMS:-}" | tr '[:upper:]' '[:lower:]')"
+          BUILD_IOS=false; BUILD_ANDROID=false
+          if [ "$RUN_BUILD_N" = "true" ]; then
+            case "$PLATFORMS_N" in ios|all) BUILD_IOS=true;; esac
+            case "$PLATFORMS_N" in android|all) BUILD_ANDROID=true;; esac
+          fi
+          echo "run_build=$RUN_BUILD_N platforms=$PLATFORMS_N -> ios=$BUILD_IOS android=$BUILD_ANDROID"
           {
             echo "auto_submit=$(b "$AUTO_SUBMIT")"
             echo "refresh=$(b "$REFRESH")"
             echo "create_release=$(b "$CREATE_RELEASE")"
             echo "run_verify=$(b "$RUN_VERIFY")"
+            echo "run_build=$RUN_BUILD_N"
+            echo "build_ios=$BUILD_IOS"
+            echo "build_android=$BUILD_ANDROID"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
@@ -157,12 +190,17 @@ jobs:
           git commit -m "chore(release): v${VERSION} [skip ci]"
           git push origin HEAD
 
-      # Build always runs. Flags assembled from inputs via shell (string-safe).
+      # Builds run unless run_build is false or platforms is none (versioning-only
+      # callers). Flags assembled from inputs via shell (string-safe).
       - name: Build iOS
-        if: inputs.platforms == 'ios' || inputs.platforms == 'all'
+        if: steps.norm.outputs.build_ios == 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # CI never mutates Apple portal capabilities (see header). The
+          # 2026-10-14 fifth-gear run died on Apple rejecting eas-cli 24's
+          # APP_GROUPS sync; capabilities are enabled by hand, once, in the portal.
+          EXPO_NO_CAPABILITY_SYNC: "1"
           EAS_VERSION: ${{ inputs.eas_version }}
           PROFILE: ${{ inputs.profile }}
           AUTO_SUBMIT: ${{ steps.norm.outputs.auto_submit }}
@@ -180,10 +218,12 @@ jobs:
             --no-wait
 
       - name: Build Android
-        if: inputs.platforms == 'android' || inputs.platforms == 'all'
+        if: steps.norm.outputs.build_android == 'true'
         working-directory: ${{ inputs.working_directory }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Same guard as iOS, kept on both steps so the policy is one setting.
+          EXPO_NO_CAPABILITY_SYNC: "1"
           EAS_VERSION: ${{ inputs.eas_version }}
           PROFILE: ${{ inputs.profile }}
           AUTO_SUBMIT: ${{ steps.norm.outputs.auto_submit }}

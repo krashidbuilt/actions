@@ -105,6 +105,37 @@ jobs:
 
 Permissions (`contents: write`) are declared inside the reusable workflow — callers don't need them. AWS auth uses long-lived access keys passed in via `secrets.AWS_ACCESS_KEY_ID` / `secrets.AWS_SECRET_ACCESS_KEY` (set at the org level). Environment and prerelease identifier are auto-detected from the branch.
 
+### reusable-deploy-mobile.yml
+
+Expo/EAS build + optional store submit + optional version bump. Parameter-driven: the CALLER maps
+branches to behaviour (no branch names inside). Boolean-ish inputs take `'true'`/`'false'` strings.
+Defaults are safe: `preview` profile, iOS only, no submit, no release.
+
+```yaml
+jobs:
+  deploy:
+    uses: krashidbuilt/actions/.github/workflows/reusable-deploy-mobile.yml@v1
+    secrets: inherit                 # EXPO_TOKEN (and PUSH_TOKEN if the default branch is protected)
+    with:
+      profile: ${{ github.ref_name == 'production' && 'production' || 'preview' }}
+      platforms: all                 # ios | android | all | none
+      auto_submit: ${{ github.ref_name == 'production' && 'true' || 'false' }}
+      create_release: ${{ github.ref_name == 'production' && 'true' || 'false' }}
+      version_sync_command: "npm pkg set version=$VERSION && node sync.app.version.js"
+```
+
+- **Versioning only:** `platforms: none` (or `run_build: 'false'`) with `create_release: 'true'`
+  tags, writes the version into the files via `version_sync_command` (which receives `VERSION`), and
+  commits `chore(release): vX.Y.Z [skip ci]`. Use it on the integration branch; build from the
+  promotion branches with `create_release: 'false'`. A matrix over several apps/profiles works too
+  (`profile: ${{ matrix.app }}-${{ github.ref_name }}`), with `run_verify: 'false'` and a verify job
+  of your own so the suite runs once.
+- **Apple capabilities are never synced from CI** (`EXPO_NO_CAPABILITY_SYNC=1` on every build).
+  Enable App Groups, push and the like by hand in the Apple portal during the one-time interactive
+  `eas credentials -p ios`; non-interactive builds only sign. `refresh_ad_hoc_profile` is unaffected.
+- The version bump commit is pushed with `github.token` (or `secrets.PUSH_TOKEN`); on GitHub the
+  repo's workflow permissions must be read/write and the branch must allow that push.
+
 ### reusable-typescript-publish.yml
 
 Build → version → publish to npm via OIDC trusted publishing (no npm token needed for the publish step itself). `NPM_TOKEN` is only used during `bun install` to authenticate private `@krashidbuilt` packages.
