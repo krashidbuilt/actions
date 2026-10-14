@@ -115,7 +115,8 @@ Defaults are safe: `preview` profile, iOS only, no submit, no release.
 jobs:
   deploy:
     uses: krashidbuilt/actions/.github/workflows/reusable-deploy-mobile.yml@v1
-    secrets: inherit                 # EXPO_TOKEN (and PUSH_TOKEN if the default branch is protected)
+    secrets:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}   # PUSH_TOKEN too, if the default branch is protected
     with:
       profile: ${{ github.ref_name == 'production' && 'production' || 'preview' }}
       platforms: all                 # ios | android | all | none
@@ -135,6 +136,10 @@ jobs:
   `eas credentials -p ios`; non-interactive builds only sign. `refresh_ad_hoc_profile` is unaffected.
 - The version bump commit is pushed with `github.token` (or `secrets.PUSH_TOKEN`); on GitHub the
   repo's workflow permissions must be read/write and the branch must allow that push.
+- **Pass secrets by name from another organization.** `secrets: inherit` only reaches a reusable in
+  the same org or enterprise; a cross-org caller (e.g. fifth-gear-tech calling the public GitHub
+  mirror) must pass `EXPO_TOKEN` (and `PUSH_TOKEN`) explicitly or eas-cli sees an empty token.
+  Same-org callers can keep `inherit`.
 
 ### reusable-typescript-publish.yml
 
