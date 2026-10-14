@@ -132,6 +132,21 @@ jobs:
         env:
           VITE_APP_VERSION: ${{ steps.version.outputs.version }}
         run: bun run ${{ inputs.build_command }}
+      # deploy/frontend shells out to `aws`. Runner hosts cache different builds of
+      # runner-images:ubuntu-latest and newer ones dropped the AWS CLI (2026-10-14: the
+      # same deploy passed on `nas` and failed on another runner with "Unable to locate
+      # executable file: aws"). Install it when missing.
+      - name: Ensure AWS CLI
+        if: steps.version.outputs.skipped != 'true'
+        shell: bash
+        run: |
+          if command -v aws >/dev/null 2>&1; then aws --version; exit 0; fi
+          arch=$(uname -m)
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp/awscli 2>/dev/null || python3 -m zipfile -e /tmp/awscliv2.zip /tmp/awscli
+          chmod +x /tmp/awscli/aws/install /tmp/awscli/aws/dist/aws /tmp/awscli/aws/dist/aws_completer 2>/dev/null || true
+          if [ "$(id -u)" = 0 ]; then /tmp/awscli/aws/install --update; else sudo /tmp/awscli/aws/install --update; fi
+          aws --version
       - uses: krashidbuilt/actions/deploy/frontend@v1
         if: steps.version.outputs.skipped != 'true'
         with:
