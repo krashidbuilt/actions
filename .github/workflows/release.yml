@@ -66,7 +66,7 @@ jobs:
       matrix:
         # Every runner that executes jobs on a host filesystem. The NAS runs
         # countertop-quote deploys, so it holds a cache of this repo too.
-        host: [studio-host, mbp2023-host, mbp2024-host, self-hosted]
+        host: [studio-host, mbp2024-host, self-hosted]
     runs-on: ${{ matrix.host }}
     steps:
       - name: Drop cached copies of this repo
