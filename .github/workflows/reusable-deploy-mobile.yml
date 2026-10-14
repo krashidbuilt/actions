@@ -26,6 +26,12 @@ name: Reusable Deploy Mobile
 # promotion branches with `create_release: 'false'` — fifth-gear-tech-native-app
 # versions on develop and builds a two-app matrix on staging/production.
 #
+# Secrets: EXPO_TOKEN (builds) and PUSH_TOKEN (optional) are declared under
+# workflow_call.secrets. A caller in the same org/enterprise may use
+# `secrets: inherit`; a caller in another org MUST pass them by name:
+#     secrets:
+#       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+#
 # EAS notes:
 # - eas-cli via npx with EXPO_TOKEN in env (expo/expo-github-action isn't mirrored
 #   on this Gitea instance). --no-wait: queues on EAS cloud and exits.
@@ -89,6 +95,19 @@ on:
         description: "Command to write VERSION into version files. Receives VERSION env var. Used only when create_release is 'true'."
         type: string
         default: "npm pkg set version=$VERSION"
+    # Declared so a caller in ANOTHER organization can pass them by name. On
+    # GitHub `secrets: inherit` only reaches a reusable in the same org or
+    # enterprise: fifth-gear-tech's first staging run (2026-10-14) called this
+    # from github.com/krashidbuilt/actions with `inherit` and eas-cli saw an
+    # empty EXPO_TOKEN ("An Expo user account is required"). Same-org callers
+    # (ETW on Gitea) can keep `secrets: inherit`; both forms satisfy these.
+    secrets:
+      EXPO_TOKEN:
+        description: "Expo access token for eas-cli (required when a build step runs)"
+        required: false
+      PUSH_TOKEN:
+        description: "Token that may push the version commit when github.token cannot (protected branch). Optional."
+        required: false
 
 jobs:
   deploy:
