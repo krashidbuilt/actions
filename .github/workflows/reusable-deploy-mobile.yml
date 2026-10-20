@@ -369,6 +369,8 @@ jobs:
             --output "$OUT"
           echo "artifact=$OUT" >> "$GITHUB_OUTPUT"
 
+      # --wait: the job's result is the store upload's result (Apple/Google
+      # rejecting the binary fails here, not silently on expo.dev).
       - name: Submit iOS (local build)
         if: steps.local_ios.outcome == 'success' && steps.norm.outputs.auto_submit == 'true'
         working-directory: ${{ inputs.working_directory }}
@@ -382,6 +384,7 @@ jobs:
             --platform ios \
             --profile "$PROFILE" \
             --path "$ARTIFACT" \
+            --wait \
             --non-interactive
 
       - name: Build Android (local)
@@ -426,4 +429,5 @@ jobs:
             --platform android \
             --profile "$PROFILE" \
             --path "$ARTIFACT" \
+            --wait \
             --non-interactive
