@@ -140,6 +140,23 @@ jobs:
   the same org or enterprise; a cross-org caller (e.g. fifth-gear-tech calling the public GitHub
   mirror) must pass `EXPO_TOKEN` (and `PUSH_TOKEN`) explicitly or eas-cli sees an empty token.
   Same-org callers can keep `inherit`.
+- **Build on your own Mac with no build credit:** `build_runner: local` runs `eas build --local` (same
+  pipeline, EAS-managed credentials) on a self-hosted macOS runner, waits, and with `auto_submit`
+  uploads the artifact via `eas submit --path` (submissions are free). Default `eas` = EAS cloud, as
+  before. Both platforms build on the macOS host (Android build-tools have no linux-arm64 binaries).
+  Pick the runner with `local_runner_label`: on GitHub, a self-hosted runner registered to the
+  calling repo (`fifth-gear-studio` for fifth-gear-tech-native-app); on Gitea, the default
+  `studio-host`, plus `runs-on: studio-host` on the calling job. Host setup (Xcode, CocoaPods,
+  fastlane, JDK 17, Android SDK + NDK) is in hestia `studio/services/github-runner-fifth-gear/`.
+
+  ```yaml
+      with:
+        profile: ${{ matrix.app }}-staging
+        platforms: all
+        auto_submit: "true"
+        build_runner: local
+        local_runner_label: fifth-gear-studio
+  ```
 
 ### reusable-typescript-publish.yml
 
