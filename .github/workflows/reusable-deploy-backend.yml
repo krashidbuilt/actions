@@ -10,6 +10,14 @@ name: Reusable Deploy Backend (CDK)
 on:
   workflow_call:
     inputs:
+      slack_channel:
+        description: "Slack channel (name or id) for the deploy card. Empty = vars.SLACK_DEPLOY_CHANNEL, then 'deployments'. No SLACK_BOT_TOKEN secret = no card."
+        type: string
+        default: ""
+      slack_production_channel:
+        description: "Slack channel for production cards. Empty = vars.SLACK_PRODUCTION_CHANNEL, then slack_channel."
+        type: string
+        default: ""
       working_directory:
         description: "Directory with package.json + CDK deps; build runs here"
         type: string
@@ -82,6 +90,18 @@ jobs:
         uses: krashidbuilt/actions/utilities/detect-environment@v1
         with:
           environment: ${{ inputs.environment }}
+      # Slack deploy card: posted as PENDING here, updated in place by the
+      # `if: always()` step at the end of the job. Without SLACK_BOT_TOKEN both
+      # steps are no-ops, and a Slack failure only warns (never fails the deploy).
+      - name: Slack (deploying)
+        id: slack
+        if: steps.env.outputs.environment != ''
+        uses: krashidbuilt/actions/utilities/slack-notify@v1
+        with:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack_channel || vars.SLACK_DEPLOY_CHANNEL || 'deployments' }}
+          production_channel: ${{ inputs.slack_production_channel || vars.SLACK_PRODUCTION_CHANNEL }}
+          environment: ${{ steps.env.outputs.environment }}
       - name: Verify
         if: inputs.run_verify
         uses: krashidbuilt/actions/typescript/verify@v1
@@ -118,3 +138,14 @@ jobs:
             "${context_args[@]}" \
             --require-approval never \
             --no-rollback
+      - name: Slack (result)
+        if: always()
+        uses: krashidbuilt/actions/utilities/slack-notify@v1
+        with:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack_channel || vars.SLACK_DEPLOY_CHANNEL || 'deployments' }}
+          production_channel: ${{ inputs.slack_production_channel || vars.SLACK_PRODUCTION_CHANNEL }}
+          status: ${{ job.status }}
+          channel_id: ${{ steps.slack.outputs.channel_id }}
+          message_id: ${{ steps.slack.outputs.message_id }}
+          environment: ${{ steps.env.outputs.environment }}

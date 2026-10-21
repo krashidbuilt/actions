@@ -3,6 +3,14 @@ name: Reusable TypeScript Publish
 on:
   workflow_call:
     inputs:
+      slack_channel:
+        description: "Slack channel (name or id) for the release card. Empty = vars.SLACK_RELEASE_CHANNEL, then 'releases'. No SLACK_BOT_TOKEN secret = no card."
+        type: string
+        default: ""
+      slack_production_channel:
+        description: "Slack channel for production releases. Empty = slack_channel (releases are not deploys, so vars.SLACK_PRODUCTION_CHANNEL is not used)."
+        type: string
+        default: ""
       working_directory:
         type: string
         default: "."
@@ -62,6 +70,9 @@ on:
         type: boolean
         default: true
     secrets:
+      SLACK_BOT_TOKEN:
+        description: "Slack bot token for the release card (chat:write, channels:read). Optional: absent = no card."
+        required: false
       NPM_TOKEN:
         required: true
 
@@ -158,3 +169,15 @@ jobs:
           update_version_file: ${{ inputs.update_version_file }}
           release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
+      # Slack release card (no pending card: a publish is quick). Posted for every
+      # release and every failed run; a no-op without SLACK_BOT_TOKEN.
+      - name: Slack (result)
+        if: always() && (failure() || steps.version.outputs.version != '')
+        uses: krashidbuilt/actions/utilities/slack-notify@v1
+        with:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack_channel || vars.SLACK_RELEASE_CHANNEL || 'releases' }}
+          production_channel: ${{ inputs.slack_production_channel }}
+          status: ${{ job.status }}
+          environment: ${{ github.ref_name == inputs.production_branch && 'production' || '' }}
+          version: ${{ steps.version.outputs.version }}
