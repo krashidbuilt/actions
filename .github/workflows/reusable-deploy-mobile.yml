@@ -322,6 +322,15 @@ jobs:
             xcrun --sdk iphoneos --show-sdk-version >/dev/null 2>&1 || missing="$missing Xcode-with-iOS-SDK"
             command -v pod >/dev/null || missing="$missing cocoapods"
             command -v fastlane >/dev/null || missing="$missing fastlane"
+            # Xcode's IPA export runs /usr/bin/rsync (openrsync), which starts its
+            # server side as the first `rsync` on PATH. Homebrew's rsync 3.x
+            # rejects openrsync's flags ("--extended-attributes: unknown option")
+            # and the export dies with "exportArchive Copy failed" after a good
+            # archive: fifth-gear staging run 39518316890, 2026-10-21.
+            if [ "$(command -v rsync)" != "/usr/bin/rsync" ]; then
+              echo "rsync on PATH is $(command -v rsync); putting /usr/bin first for the iOS export"
+              echo "/usr/bin" >> "$GITHUB_PATH"
+            fi
           fi
           if [ "$BUILD_ANDROID" = "true" ]; then
             if [ -z "${JAVA_HOME:-}" ]; then
