@@ -174,6 +174,29 @@ jobs:
 
 npm dist-tag is auto-mapped: develop → `alpha`, staging → `beta`, production → `latest`.
 
+## Slack deploy notifications
+
+Every reusable deploy and publish workflow posts a card to Slack, the same card
+karaconnect/actions posts: project, initiator, status, environment, tag and PR,
+linked to the Gitea (or GitHub) run. Deploys post PENDING when they start and
+update the same message to SUCCESS / FAILED / CANCELLED when the job ends. A
+finished production deploy also carries the PR's title and body as release notes.
+
+| Workflow | Card | Channel (first non-empty wins) |
+|---|---|---|
+| `reusable-deploy-frontend` / `-backend` / `-mobile` | pending → result | `slack_channel` input → `vars.SLACK_DEPLOY_CHANNEL` → `deployments`; production: `slack_production_channel` → `vars.SLACK_PRODUCTION_CHANNEL` → the same |
+| `reusable-typescript-publish` / `reusable-publish-binary` | result only (every release, every failed run) | `slack_channel` → `vars.SLACK_RELEASE_CHANNEL` → `releases` |
+
+**Turning it on:** a Slack app with a bot token (`chat:write`, `channels:read`,
+plus `groups:read` for private channels), invited to the channels. Store the
+token as an org secret `SLACK_BOT_TOKEN` and set the channel variables at the
+org level. Callers using `secrets: inherit` need nothing else; callers passing
+secrets by name add `SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}`. A
+cross-org GitHub caller (fifth-gear-tech) passes its own workspace's token.
+
+With no token the steps are no-ops, and a Slack error only warns: a notification
+never fails a deploy. Mobile runs that build nothing (versioning-only) post nothing.
+
 ## Release Flow (this repo)
 
 This repo follows a **floating major version tag** pattern (same as `actions/checkout`, `actions/setup-node`, etc.):
@@ -325,4 +348,20 @@ bun run test               # Vitest
   with:
     workflow: release.yml
     branch: main
+
+# Slack deploy card: post, then update in place with the job result
+- uses: krashidbuilt/actions/utilities/slack-notify@v1
+  id: slack
+  with:
+    slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+    channel: deployments
+    version: ${{ steps.version.outputs.version }}
+# ... deploy ...
+- uses: krashidbuilt/actions/utilities/slack-notify@v1
+  if: always()
+  with:
+    slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+    status: ${{ job.status }}
+    channel_id: ${{ steps.slack.outputs.channel_id }}
+    message_id: ${{ steps.slack.outputs.message_id }}
 ```

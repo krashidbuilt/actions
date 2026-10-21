@@ -25,6 +25,7 @@ import { config as detectAppInfoConfig } from "../src/actions/utilities/detect-a
 import { config as detectEnvironmentConfig } from "../src/actions/utilities/detect-environment/config.js";
 import { config as mergeBranchConfig } from "../src/actions/utilities/merge-branch/config.js";
 import { config as parseVersionConfig } from "../src/actions/utilities/parse-version/config.js";
+import { config as slackNotifyConfig } from "../src/actions/utilities/slack-notify/config.js";
 import { config as syncBranchesConfig } from "../src/actions/utilities/sync-branches/config.js";
 import { config as triggerWorkflowConfig } from "../src/actions/utilities/trigger-workflow/config.js";
 import { config as updateVersionTagsConfig } from "../src/actions/utilities/update-version-tags/config.js";
@@ -72,6 +73,7 @@ export const actionConfigs: Record<string, ActionConfigShape> = {
   "utilities/sync-branches": syncBranchesConfig,
   "utilities/merge-branch": mergeBranchConfig,
   "utilities/trigger-workflow": triggerWorkflowConfig,
+  "utilities/slack-notify": slackNotifyConfig,
 };
 
 export { getOutputPath } from "./utils.js";

@@ -73,6 +73,14 @@ name: Reusable Deploy Mobile
 on:
   workflow_call:
     inputs:
+      slack_channel:
+        description: "Slack channel (name or id) for the deploy card. Empty = vars.SLACK_DEPLOY_CHANNEL, then 'deployments'. No SLACK_BOT_TOKEN secret = no card."
+        type: string
+        default: ""
+      slack_production_channel:
+        description: "Slack channel for production cards. Empty = vars.SLACK_PRODUCTION_CHANNEL, then slack_channel."
+        type: string
+        default: ""
       working_directory:
         type: string
         default: "."
@@ -130,6 +138,9 @@ on:
     # empty EXPO_TOKEN ("An Expo user account is required"). Same-org callers
     # (ETW on Gitea) can keep `secrets: inherit`; both forms satisfy these.
     secrets:
+      SLACK_BOT_TOKEN:
+        description: "Slack bot token for the deploy card (chat:write, channels:read). Optional: absent = no card."
+        required: false
       EXPO_TOKEN:
         description: "Expo access token for eas-cli (required when a build step runs)"
         required: false
@@ -246,6 +257,20 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "chore(release): v${VERSION} [skip ci]"
           git push origin HEAD
+
+      # Slack deploy card: posted as PENDING here, updated in place by the
+      # `if: always()` step at the end of the job. Without SLACK_BOT_TOKEN both
+      # steps are no-ops, and a Slack failure only warns (never fails the deploy).
+      - name: Slack (deploying)
+        id: slack
+        if: (steps.norm.outputs.build_ios == 'true' || steps.norm.outputs.build_android == 'true')
+        uses: krashidbuilt/actions/utilities/slack-notify@v1
+        with:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack_channel || vars.SLACK_DEPLOY_CHANNEL || 'deployments' }}
+          production_channel: ${{ inputs.slack_production_channel || vars.SLACK_PRODUCTION_CHANNEL }}
+          project_name: ${{ github.event.repository.name }} (${{ inputs.profile }})
+          version: ${{ steps.version.outputs.version }}
 
       # Builds run unless run_build is false or platforms is none (versioning-only
       # callers). Flags assembled from inputs via shell (string-safe).
@@ -474,3 +499,16 @@ jobs:
             --path "$ARTIFACT" \
             --wait \
             --non-interactive
+
+      - name: Slack (result)
+        if: always() && (steps.norm.outputs.build_ios == 'true' || steps.norm.outputs.build_android == 'true')
+        uses: krashidbuilt/actions/utilities/slack-notify@v1
+        with:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack_channel || vars.SLACK_DEPLOY_CHANNEL || 'deployments' }}
+          production_channel: ${{ inputs.slack_production_channel || vars.SLACK_PRODUCTION_CHANNEL }}
+          status: ${{ job.status }}
+          channel_id: ${{ steps.slack.outputs.channel_id }}
+          message_id: ${{ steps.slack.outputs.message_id }}
+          project_name: ${{ github.event.repository.name }} (${{ inputs.profile }})
+          version: ${{ steps.version.outputs.version }}
