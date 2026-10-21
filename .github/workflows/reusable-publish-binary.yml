@@ -3,6 +3,14 @@ name: Reusable Publish Binary
 on:
   workflow_call:
     inputs:
+      slack_channel:
+        description: "Slack channel (name or id) for the release card. Empty = vars.SLACK_RELEASE_CHANNEL, then 'releases'. No SLACK_BOT_TOKEN secret = no card."
+        type: string
+        default: ""
+      slack_production_channel:
+        description: "Slack channel for production releases. Empty = slack_channel (releases are not deploys, so vars.SLACK_PRODUCTION_CHANNEL is not used)."
+        type: string
+        default: ""
       working_directory:
         type: string
         default: "."
@@ -29,6 +37,9 @@ on:
         type: boolean
         default: false
     secrets:
+      SLACK_BOT_TOKEN:
+        description: "Slack bot token for the release card (chat:write, channels:read). Optional: absent = no card."
+        required: false
       NPM_TOKEN:
         required: true
 
@@ -286,3 +297,18 @@ jobs:
             echo "Uploading ${BINARY_NAME}-${platform}${EXT} to release ${TAG}"
             gh release upload "$TAG" "$binary" --clobber
           done
+
+  notify:
+    name: Slack
+    needs: [version, build, publish]
+    if: always() && needs.version.outputs.skipped != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: krashidbuilt/actions/utilities/slack-notify@v1
+        with:
+          slack_bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack_channel || vars.SLACK_RELEASE_CHANNEL || 'releases' }}
+          production_channel: ${{ inputs.slack_production_channel }}
+          status: ${{ (needs.version.result == 'failure' || needs.build.result == 'failure' || needs.publish.result == 'failure') && 'failure' || (needs.version.result == 'cancelled' || needs.build.result == 'cancelled' || needs.publish.result == 'cancelled') && 'cancelled' || 'success' }}
+          project_name: ${{ inputs.binary_name }}
+          version: ${{ needs.version.outputs.version }}
