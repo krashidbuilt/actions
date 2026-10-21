@@ -354,6 +354,38 @@ jobs:
           [ "$BUILD_ANDROID" = "true" ] && "$JAVA_HOME/bin/java" -version 2>&1 | head -1
           node --version
 
+      # `eas submit --path` evaluates the app config, but unlike a cloud build's
+      # --auto-submit it does not get the build profile's env. An app.config.js
+      # that reads e.g. APP_VARIANT then throws ("expo config --json exited with
+      # non-zero code", fifth-gear staging run 39518316890). Resolve the
+      # profile's env the way eas build applies it (extends chain, base first,
+      # then the platform's own env) into one sourceable file per platform.
+      - name: Build profile env for eas submit (local)
+        if: steps.norm.outputs.build_runner == 'local' && steps.norm.outputs.auto_submit == 'true' && (steps.norm.outputs.build_ios == 'true' || steps.norm.outputs.build_android == 'true')
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          cat > "$RUNNER_TEMP/eas-profile-env.js" <<'JS'
+          const [profile, platform] = process.argv.slice(2);
+          const build = require(process.cwd() + "/eas.json").build || {};
+          const chain = [];
+          for (let n = profile, i = 0; n && build[n] && i < 20; i++) {
+            chain.unshift(build[n]);
+            n = build[n].extends;
+          }
+          const env = {};
+          for (const p of chain) Object.assign(env, p.env || {}, (p[platform] || {}).env || {});
+          const q = (v) => "'" + String(v).replace(/'/g, "'\\''") + "'";
+          for (const [k, v] of Object.entries(env)) {
+            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) console.log(`export ${k}=${q(v)}`);
+          }
+          JS
+          for platform in ios android; do
+            node "$RUNNER_TEMP/eas-profile-env.js" "$PROFILE" "$platform" > "$RUNNER_TEMP/eas-profile-env-$platform.sh"
+            echo "$platform: $(cut -d= -f1 "$RUNNER_TEMP/eas-profile-env-$platform.sh" | sed 's/^export //' | tr '\n' ' ')"
+          done
+
       - name: Build iOS (local)
         id: local_ios
         if: steps.norm.outputs.build_ios == 'true' && steps.norm.outputs.build_runner == 'local'
@@ -389,6 +421,7 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           ARTIFACT: ${{ steps.local_ios.outputs.artifact }}
         run: |
+          . "$RUNNER_TEMP/eas-profile-env-ios.sh"
           npx eas-cli@"$EAS_VERSION" submit \
             --platform ios \
             --profile "$PROFILE" \
@@ -434,6 +467,7 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           ARTIFACT: ${{ steps.local_android.outputs.artifact }}
         run: |
+          . "$RUNNER_TEMP/eas-profile-env-android.sh"
           npx eas-cli@"$EAS_VERSION" submit \
             --platform android \
             --profile "$PROFILE" \
