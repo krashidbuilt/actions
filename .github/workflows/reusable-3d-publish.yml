@@ -1,0 +1,113 @@
+name: Reusable 3D Publish
+
+# Publish one CAD project revision (a `cadkit viewer --sidecar` directory + renders) to
+# https://3d.krashidbuilt.com/<project>/<rev>/ and add it to the site index. Runs
+# scripts/3d-publish.sh from this repo at `actions_ref`. The caller builds the viewer first (in an
+# earlier job, uploaded as an artifact, or committed) and passes its path.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: "Project id, the /<project>/ folder: [a-z0-9][a-z0-9-]{0,62}"
+        type: string
+        required: true
+      project_title:
+        description: "Project name on the index. Empty = keep the published one (else the id)."
+        type: string
+        default: ""
+      rev:
+        description: "Revision folder. Empty = the short commit sha."
+        type: string
+        default: ""
+      title:
+        description: "This revision's title. Empty = the rev."
+        type: string
+        default: ""
+      dir:
+        description: "cadkit viewer --sidecar output directory (index.html + <part>.json), relative to the repo root"
+        type: string
+        required: true
+      renders:
+        description: "Optional PNG renders directory, uploaded to /<project>/<rev>/renders/"
+        type: string
+        default: ""
+      thumb:
+        description: "Render used as the index thumbnail. Empty = face_on.png, iso.png, else the first PNG."
+        type: string
+        default: ""
+      artifact:
+        description: "Optional: download this workflow artifact into the workspace first (when an earlier job built the viewer)"
+        type: string
+        default: ""
+      actions_ref:
+        description: "Ref of krashidbuilt/actions whose scripts/3d-publish.sh runs"
+        type: string
+        default: "v1"
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        description: "The 3d-publisher IAM user's access key id"
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        description: "The 3d-publisher IAM user's secret access key"
+        required: true
+    outputs:
+      url:
+        description: "The published revision's URL"
+        value: ${{ jobs.publish.outputs.url }}
+
+jobs:
+  publish:
+    name: Publish to 3d.krashidbuilt.com
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: inputs.artifact != ''
+        with:
+          name: ${{ inputs.artifact }}
+      - uses: actions/checkout@v4
+        with:
+          repository: krashidbuilt/actions
+          ref: ${{ inputs.actions_ref }}
+          path: .krashidbuilt-actions
+      # Runner hosts cache different builds of runner-images:ubuntu-latest and newer ones dropped
+      # the AWS CLI (see reusable-deploy-frontend.yml). Install it when missing.
+      - name: Ensure AWS CLI
+        shell: bash
+        run: |
+          if command -v aws >/dev/null 2>&1; then aws --version; exit 0; fi
+          arch=$(uname -m)
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp/awscli 2>/dev/null || python3 -m zipfile -e /tmp/awscliv2.zip /tmp/awscli
+          chmod +x /tmp/awscli/aws/install /tmp/awscli/aws/dist/aws /tmp/awscli/aws/dist/aws_completer 2>/dev/null || true
+          if [ "$(id -u)" = 0 ]; then /tmp/awscli/aws/install --update; else sudo /tmp/awscli/aws/install --update; fi
+          aws --version
+      - name: Publish
+        id: publish
+        shell: bash
+        env:
+          PROJECT: ${{ inputs.project }}
+          PROJECT_TITLE: ${{ inputs.project_title }}
+          REV: ${{ inputs.rev }}
+          TITLE: ${{ inputs.title }}
+          DIR: ${{ inputs.dir }}
+          RENDERS: ${{ inputs.renders }}
+          THUMB: ${{ inputs.thumb }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          rev="${REV:-${SHA:0:7}}"
+          args=(--project "$PROJECT" --rev "$rev" --dir "$DIR")
+          [ -n "$PROJECT_TITLE" ] && args+=(--project-title "$PROJECT_TITLE")
+          [ -n "$TITLE" ] && args+=(--title "$TITLE")
+          [ -n "$RENDERS" ] && args+=(--renders "$RENDERS")
+          [ -n "$THUMB" ] && args+=(--thumb "$THUMB")
+          bash .krashidbuilt-actions/scripts/3d-publish.sh "${args[@]}" | tee /tmp/3d-publish.log
+          echo "url=$(tail -1 /tmp/3d-publish.log)" >> "$GITHUB_OUTPUT"
