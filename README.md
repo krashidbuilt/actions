@@ -174,6 +174,44 @@ jobs:
 
 npm dist-tag is auto-mapped: develop → `alpha`, staging → `beta`, production → `latest`.
 
+### reusable-3d-publish.yml
+
+Publishes one CAD project revision, the `cadkit viewer --sidecar` directory plus optional PNG
+renders, to `https://3d.krashidbuilt.com/<project>/<rev>/`. It also upserts the revision into
+`/<project>/index.json` and rebuilds `/index.json`. The site is behind the Google gate. Its
+stack, access rules and invites (`3d:<project>` groups) live in krashidbuilt/infrastructure.
+
+```yaml
+jobs:
+  publish-3d:
+    uses: krashidbuilt/actions/.github/workflows/reusable-3d-publish.yml@v1
+    with: { project: passport, project_title: Passport enclosure, dir: cad/enclosure/out/viewer, renders: cad/enclosure/renders }
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.THREED_PUBLISH_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.THREED_PUBLISH_AWS_SECRET_ACCESS_KEY }}
+```
+
+- **`rev`** defaults to the short commit sha, and `title` defaults to the rev.
+- **`artifact`** downloads a viewer that an earlier job built.
+- **Keys** belong to the `3d-publisher` IAM user. It can write the site bucket, invalidate the
+  site's distribution and read `/platform/3d/*` in SSM. They are org secrets named
+  `THREED_PUBLISH_*`, because `AWS_ACCESS_KEY_ID` is already the deployer key.
+- **The job** runs [`scripts/3d-publish.sh`](scripts/3d-publish.sh), which you can also run by hand
+  with any profile that can do the same:
+
+```sh
+AWS_PROFILE=krashidbuilt scripts/3d-publish.sh --project passport --project-title "Passport enclosure" \
+  --rev "$(git rev-parse --short HEAD)" --title "Passport enclosure v0 (454261 cell)" \
+  --dir cad/enclosure/out/viewer --renders cad/enclosure/renders [--thumb face_on.png] [--date ISO] [--dry-run]
+```
+
+**Index contract.** `/index.json` is `{"projects":[{"id","title","revisions":[{"rev","date","title","path":"/<p>/<rev>/","thumb":"/<p>/<rev>/renders/<png>"|null}]}]}`.
+Revisions are newest first by `date`, and `/<project>/index.json` is one element of `projects`.
+
+**Revisions are immutable.** A new sha gets a new folder. Re-publishing the same rev replaces
+only that folder. Revision files are cached for a year. The index files are no-cache, and every
+publish invalidates `/index.json`, `/index.html`, `/` and `/<project>/*`.
+
 ## Slack deploy notifications
 
 Every reusable deploy and publish workflow posts a card to Slack, the same card
