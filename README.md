@@ -205,8 +205,32 @@ AWS_PROFILE=krashidbuilt scripts/3d-publish.sh --project passport --project-titl
   --dir cad/enclosure/out/viewer --renders cad/enclosure/renders [--thumb face_on.png] [--date ISO] [--dry-run]
 ```
 
+**Briefs and status.** A revision can carry a brief: a markdown file with a small front matter
+(title, one-line summary, `status`, optional `status_reason`, `parent`, `superseded_by`,
+`numbers` and `links`) and the sections `## What changed`, `## Limitations` and
+`## Recommendation`. `--brief` (workflow input `brief`) validates it before anything is uploaded
+and publishes `/<project>/<rev>/brief.json` + `brief.md`. The brief is fixed with the revision;
+its status is not. `/<project>/<rev>/status.json` holds the current status (`concept`, `checked`,
+`recommended`, `superseded`, `signed-off`), dated and with a reason, and the history newest
+first, bounded by bytes. Change it without a new revision:
+
+```sh
+scripts/3d-publish.sh --project passport --rev 16cd948-book-mjf-shifter --brief cad/enclosure/briefs/16cd948-book-mjf-shifter.md
+scripts/3d-publish.sh --project passport --set-status 16cd948-book-mjf-shifter superseded \
+  --superseded-by 75d6682-book-mjf-shifter --reason "replaced by the controls v3 set" [--at ISO]
+python3 scripts/3d-publish.py brief validate cad/enclosure/briefs/*.md   # check briefs in CI
+```
+
+`brief.json` and `status.json` are the source of truth. The index entry gets a copy (`brief`
+with title, summary and plain excerpts, `status`, `statusPath`, `parent`, `supersededBy`,
+`renders`, and `updated`, the latest publish, brief or status change) so the site can sort. A
+revision with a status gets a one-line "Superseded by <rev>" banner in its own page, read from
+its `status.json`, so a single-revision link shows it too. `index.json`, `brief.json` and
+`status.json` can never be revision ids.
+
 **Index contract.** `/index.json` is `{"projects":[{"id","title","revisions":[{"rev","date","title","path":"/<p>/<rev>/","thumb":"/<p>/<rev>/renders/<png>"|null}]}]}`.
 Revisions are newest first by `date`, and `/<project>/index.json` is one element of `projects`.
+The brief and status fields above are optional additions; readers ignore what they don't know.
 
 **Revisions are immutable.** A new sha gets a new folder. Re-publishing the same rev replaces
 only that folder. Revision files are cached for a year. The index files are no-cache, and every

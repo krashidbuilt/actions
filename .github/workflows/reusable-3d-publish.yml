@@ -36,6 +36,10 @@ on:
         description: "Render used as the index thumbnail. Empty = face_on.png, iso.png, else the first PNG."
         type: string
         default: ""
+      brief:
+        description: "Optional revision brief (markdown + front matter, see scripts/3d-publish.sh), relative to the repo root; published as /<project>/<rev>/brief.json + brief.md with its first status"
+        type: string
+        default: ""
       artifact:
         description: "Optional: download this workflow artifact into the workspace first (when an earlier job built the viewer)"
         type: string
@@ -100,6 +104,7 @@ jobs:
           DIR: ${{ inputs.dir }}
           RENDERS: ${{ inputs.renders }}
           THUMB: ${{ inputs.thumb }}
+          BRIEF: ${{ inputs.brief }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -109,5 +114,6 @@ jobs:
           [ -n "$TITLE" ] && args+=(--title "$TITLE")
           [ -n "$RENDERS" ] && args+=(--renders "$RENDERS")
           [ -n "$THUMB" ] && args+=(--thumb "$THUMB")
+          [ -n "$BRIEF" ] && args+=(--brief "$BRIEF")
           bash .krashidbuilt-actions/scripts/3d-publish.sh "${args[@]}" | tee /tmp/3d-publish.log
           echo "url=$(tail -1 /tmp/3d-publish.log)" >> "$GITHUB_OUTPUT"
