@@ -362,10 +362,12 @@ def status_add(doc: dict, project: str, rev: str, change: dict) -> dict:
     return out
 
 
-def make_change(value: str, at: str, reason: str, superseded_by: str | None) -> dict:
+def make_change(value: str, at: str, reason: str, superseded_by: str | None, run: str = "") -> dict:
     change = {"value": value, "at": at, "reason": reason}
     if superseded_by:
         change["supersededBy"] = superseded_by
+    if run:
+        change["run"] = run  # which publisher run wrote it (CI run id, else time + pid)
     return change
 
 
@@ -477,7 +479,8 @@ def index_brief(path: str, brief: dict, status_in: str, status_out: str, replace
     if renders and not rev.get("renders"):
         rev["renders"] = renders
     if not doc.get("current"):
-        change = make_change(brief["status"], brief["at"], brief["statusReason"] or "first brief", by)
+        change = make_change(brief["status"], brief["at"], brief["statusReason"] or "first brief", by,
+                             os.environ.get("THREED_RUN", ""))
         doc = status_add({}, project, target, change)
         save_json(status_out, doc)
     copy_status(rev, doc)
@@ -511,7 +514,7 @@ def index_status(path: str, status_in: str, status_out: str, env: dict) -> dict:
         raise BriefError(errors)
     doc = load_json(status_in)
     current = doc.get("current") or {}
-    change = make_change(value, at, reason, by)
+    change = make_change(value, at, reason, by, env.get("THREED_RUN", ""))
     if all(current.get(k) == change.get(k) for k in ("value", "reason", "supersededBy")):
         return rev  # already so: a rerun changes nothing
     doc = status_add(doc, project, target, change)
@@ -775,6 +778,9 @@ fi
 [[ -z "$thumb" || -f "$renders/$thumb" ]] || die "--thumb ${thumb} is not in ${renders}"
 
 prefix="${project}/${rev}"
+THREED_RUN="${GITHUB_RUN_ID:+gh-${GITHUB_RUN_ID}-}$(date -u +%Y%m%dT%H%M%SZ)-$$"
+export THREED_RUN
+written=() # object keys this run wrote, for an invalidation of exactly those (metadata runs)
 base="s3://${bucket}"
 long="public, max-age=31536000, immutable"
 run() {
@@ -849,16 +855,19 @@ if [[ "$mode" == publish ]]; then
 			--cache-control "$long" --only-show-errors
 	fi
 fi
-# A brief or status change writes only these three files and the indexes.
+# A brief or status change writes only these three files and the indexes, all no-cache (a
+# browser must not keep "checked" after "superseded"), and never deletes anything.
 if [[ -n "$brief" ]]; then
 	run aws s3 cp "$work/brief.json" "${base}/${prefix}/brief.json" \
 		--cache-control "no-cache" --content-type "application/json" --only-show-errors
 	run aws s3 cp "$brief" "${base}/${prefix}/brief.md" \
 		--cache-control "no-cache" --content-type "text/markdown; charset=utf-8" --only-show-errors
+	written+=("/${prefix}/brief.json" "/${prefix}/brief.md")
 fi
 if [[ -f "$status_out" ]]; then
 	run aws s3 cp "$status_out" "${base}/${prefix}/status.json" \
 		--cache-control "no-cache" --content-type "application/json" --only-show-errors
+	written+=("/${prefix}/status.json")
 fi
 run aws s3 cp "$work/project.json" "${base}/${project}/index.json" \
 	--cache-control "no-cache" --content-type "application/json" --only-show-errors
@@ -878,7 +887,7 @@ run aws s3 cp "$work/index.json" "${base}/index.json" \
 if [[ "$mode" == publish ]]; then
 	paths=("/index.json" "/index.html" "/" "/${project}/*")
 else
-	paths=("/index.json" "/${project}/index.json" "/${prefix}/brief.json" "/${prefix}/brief.md" "/${prefix}/status.json")
+	paths=("/index.json" "/${project}/index.json" ${written[@]+"${written[@]}"})
 fi
 run aws cloudfront create-invalidation --distribution-id "$dist" --paths "${paths[@]}" \
 	--query Invalidation.Id --output text

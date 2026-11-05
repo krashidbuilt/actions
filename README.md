@@ -225,7 +225,9 @@ scripts/3d-publish.sh --validate-brief cad/enclosure/briefs/*.md   # check brief
 with title, summary and plain excerpts, `status`, `statusPath`, `parent`, `supersededBy`,
 `renders`, and `updated`, the latest publish, brief or status change, never a reskin or a note)
 so the site can sort. A brief or status change writes only `brief.json`, `brief.md`,
-`status.json` and the two indexes, never the revision folder. Every page published from this
+`status.json` and the two indexes (all `no-cache`), deletes nothing, never touches the revision
+folder, and invalidates exactly the paths it wrote. Each status entry records the `run` that
+wrote it. Every page published from this
 version carries a one-line banner that reads its own `status.json` at view time, so a
 single-revision link shows "Superseded by <rev>" too (pages published before it don't have the
 banner). `index.json`, `brief.json` and `status.json` can never be revision ids. The python

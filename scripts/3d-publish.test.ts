@@ -354,13 +354,25 @@ describe("briefs", () => {
     expect(json("passport/bbb2222/brief.json").title).toBe("Book, MJF 13.75, shifter");
     expect(obj("passport/bbb2222/brief.md")).toBe(BRIEF);
     expect(meta("passport/bbb2222/brief.json")).toEqual({ cacheControl: "no-cache", contentType: "application/json" });
-    expect(meta("passport/bbb2222/brief.md").contentType).toBe("text/markdown; charset=utf-8");
+    expect(meta("passport/bbb2222/brief.md")).toEqual({
+      cacheControl: "no-cache",
+      contentType: "text/markdown; charset=utf-8",
+    });
+    expect(meta("passport/bbb2222/status.json")).toEqual({ cacheControl: "no-cache", contentType: "application/json" });
+    expect(meta("passport/index.json").cacheControl).toBe("no-cache");
+    expect(meta("index.json").cacheControl).toBe("no-cache");
+    const first = {
+      value: "checked",
+      at: "2026-11-05T12:00:00Z",
+      reason: "Fit checks pass.",
+      run: expect.stringMatching(/^\d{8}T\d{6}Z-\d+$/),
+    };
     expect(json("passport/bbb2222/status.json")).toEqual({
       format: "3d-status/1",
       project: "passport",
       rev: "bbb2222",
-      current: { value: "checked", at: "2026-11-05T12:00:00Z", reason: "Fit checks pass." },
-      history: [{ value: "checked", at: "2026-11-05T12:00:00Z", reason: "Fit checks pass." }],
+      current: first,
+      history: [first],
       dropped: 0,
     });
     const e = entry("bbb2222");
@@ -478,7 +490,14 @@ describe("briefs", () => {
     r = sh(["--project", "passport", "--rev", "bbb2222", "--brief", briefFile("b.md"), "--at", "2026-11-05T12:00:00Z"]);
     expect(r.status).toBe(0);
     const doc = json("passport/bbb2222/status.json");
-    expect(doc.history).toEqual([{ value: "concept", at: "2026-11-05T11:00:00Z", reason: "first" }]);
+    expect(doc.history).toEqual([
+      {
+        value: "concept",
+        at: "2026-11-05T11:00:00Z",
+        reason: "first",
+        run: expect.stringMatching(/^\d{8}T\d{6}Z-\d+$/),
+      },
+    ]);
     expect(entry("bbb2222").status.value).toBe("concept");
     r = sh([
       "--project",
@@ -543,6 +562,7 @@ describe("--set-status", () => {
     expect(status(["aaa1111", "checked", "--reason", "fit checks pass", "--at", "2026-11-04T12:00:00Z"]).status).toBe(
       0,
     );
+    writeFileSync(join(tmp, "aws.log"), "");
     const r = status([
       "aaa1111",
       "superseded",
@@ -560,7 +580,10 @@ describe("--set-status", () => {
       at: "2026-11-05T10:00:00Z",
       reason: "replaced by <b>bbb</b>",
       supersededBy: "bbb2222",
+      run: expect.stringMatching(/^\d{8}T\d{6}Z-\d+$/),
     });
+    expect(meta("passport/aaa1111/status.json")).toEqual({ cacheControl: "no-cache", contentType: "application/json" });
+    expect(invalidated()).toEqual(["/index.json", "/passport/index.json", "/passport/aaa1111/status.json"]);
     expect(doc.history.map((h: any) => h.value)).toEqual(["superseded", "checked"]);
     const e = entry("aaa1111");
     expect(e.status.value).toBe("superseded");
@@ -576,9 +599,48 @@ describe("--set-status", () => {
     ).toBe(0);
     expect(json("passport/aaa1111/status.json").history).toHaveLength(2); // a rerun is a no-op
     expect(calls().some((c) => c[1] === "cp" && c[3]?.startsWith("s3://") && c[3].endsWith("status.json"))).toBe(false);
+    expect(invalidated()).toEqual(["/index.json", "/passport/index.json"]); // exactly what it wrote
 
     expect(status(["aaa1111", "checked", "--reason", "reinstated", "--at", "2026-11-06T00:00:00Z"]).status).toBe(0);
     expect(entry("aaa1111").supersededBy).toBeUndefined();
+  });
+
+  test("on a legacy, manifest-less revision --set-status and --brief delete and change nothing else", () => {
+    // objects no publish of this version wrote: no manifest, odd leftovers, renders
+    for (const [k, v] of Object.entries({
+      "passport/aaa1111/old-part.json": "{}",
+      "passport/aaa1111/notes.txt": "x",
+      "passport/aaa1111/renders/legacy.png": "png",
+      "passport/aaa1111/sub/deep.bin": "b",
+    })) {
+      mkdirSync(join(s3, k, ".."), { recursive: true });
+      writeFileSync(join(s3, k), v);
+    }
+    expect(has("passport/aaa1111/manifest.json")).toBe(false);
+    const before = snapshot();
+    let r = status(["aaa1111", "checked", "--reason", "legacy check", "--at", "2026-11-05T12:00:00Z"]);
+    expect(r.status).toBe(0);
+    expect(changed(before, snapshot())).toEqual(["index.json", "passport/aaa1111/status.json", "passport/index.json"]);
+    const mid = snapshot();
+    r = sh([
+      "--project",
+      "passport",
+      "--rev",
+      "aaa1111",
+      "--brief",
+      briefFile("b.md", BRIEF.replace("parent: aaa1111\n", "")),
+    ]);
+    expect(r.status).toBe(0);
+    expect(changed(mid, snapshot())).toEqual([
+      "index.json",
+      "passport/aaa1111/brief.json",
+      "passport/aaa1111/brief.md",
+      "passport/index.json",
+    ]);
+    expect(Object.keys(snapshot()).filter((k) => !(k in before))).toEqual(
+      expect.arrayContaining(["passport/aaa1111/status.json", "passport/aaa1111/brief.json"]),
+    );
+    expect(calls().some((c) => c[1] === "sync" || c[1] === "rm" || c.includes("--delete"))).toBe(false);
   });
 
   test("the history is bounded by bytes, oldest dropped and counted", () => {
