@@ -1,24 +1,30 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 // scripts/3d-publish.sh end to end against a fake `aws` (scripts/testdata/fake-aws.py) whose
-// bucket is a temp directory, plus the brief parser in scripts/3d-publish.py.
+// bucket is a temp directory, plus its embedded python helper (brief parser, index, status).
 
 const SCRIPTS = resolve(__dirname);
 const SCRIPT = join(SCRIPTS, "3d-publish.sh");
-const HELPER = join(SCRIPTS, "3d-publish.py");
+const scriptText = readFileSync(SCRIPT, "utf-8");
+const HELPER_SRC = scriptText.slice(scriptText.indexOf("<<'PY'\n") + 7, scriptText.indexOf("\nPY\n") + 1);
+const HELPER = join(mkdtempSync(join(tmpdir(), "3d-helper-")), "3d-publish.py");
+writeFileSync(HELPER, HELPER_SRC);
 
 const BRIEF = `---
 title: Book, MJF 13.75, shifter
@@ -113,22 +119,28 @@ function briefFile(name: string, text = BRIEF): string {
   return path;
 }
 
-function publish(rev: string, date: string, extra: string[] = []): Run {
-  const dir = viewer(`v-${rev}`);
-  return sh([
-    "--project",
-    "passport",
-    "--rev",
-    rev,
-    "--dir",
-    dir,
-    "--renders",
-    join(dir, "renders"),
-    "--date",
-    date,
-    ...extra,
-  ]);
+function publish(rev: string, date: string, extra: string[] = [], envExtra: NodeJS.ProcessEnv = {}): Run {
+  const dir = viewer(`v-${rev.replace(/\W/g, "_")}`);
+  return sh(
+    ["--project", "passport", "--rev", rev, "--dir", dir, "--renders", join(dir, "renders"), "--date", date, ...extra],
+    envExtra,
+  );
 }
+
+const snapshot = () => {
+  const out: Record<string, string> = {};
+  const walk = (d: string) => {
+    for (const name of readdirSync(d)) {
+      const p = join(d, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else out[relative(s3, p)] = createHash("sha256").update(readFileSync(p)).digest("hex");
+    }
+  };
+  walk(s3);
+  return out;
+};
+const changed = (a: Record<string, string>, b: Record<string, string>) =>
+  [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => a[k] !== b[k]).sort();
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "3d-publish-"));
@@ -258,8 +270,8 @@ describe("brief parser", () => {
   });
 });
 
-describe("publish without a brief (unchanged behaviour)", () => {
-  test("uploads the viewer, writes the same index entry and invalidates the same paths", () => {
+describe("publish without a brief", () => {
+  test("uploads the viewer, writes the same index entry (plus renders) and invalidates the same paths", () => {
     const r = publish("aaa1111", "2026-11-04T10:00:00Z", ["--title", "First"]);
     expect(r.status).toBe(0);
     expect(entry("aaa1111")).toEqual({
@@ -270,11 +282,46 @@ describe("publish without a brief (unchanged behaviour)", () => {
       thumb: "/passport/aaa1111/renders/face_on.png",
       renders: ["face_on.png", "iso.png"],
     });
-    expect(obj("passport/aaa1111/index.html")).not.toContain("3d-status-banner");
+    // the page carries the (inert until a status exists) banner; nothing else changes
+    expect(obj("passport/aaa1111/index.html")).toContain("3d-status-banner:start");
+    expect(obj("passport/aaa1111/index.html")).toContain("<canvas></canvas>");
+    expect(meta("passport/aaa1111/index.html")).toEqual({
+      cacheControl: "no-cache",
+      contentType: "text/html; charset=utf-8",
+    });
     expect(has("passport/aaa1111/status.json")).toBe(false);
     expect(meta("passport/aaa1111/face.json").cacheControl).toBe("public, max-age=31536000, immutable");
     expect(json("index.json").projects[0].id).toBe("passport");
     expect(invalidated()).toEqual(["/index.json", "/index.html", "/", "/passport/*"]);
+  });
+
+  test("a publish of a listed rev is refused before anything is written", () => {
+    expect(publish("aaa1111", "2026-11-04T10:00:00Z").status).toBe(0);
+    writeFileSync(join(tmp, "aws.log"), "");
+    const r = publish("aaa1111", "2026-11-05T10:00:00Z");
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("aaa1111 is already published");
+    expect(r.stderr).toContain("--brief");
+    expect(writes()).toEqual([]);
+  });
+
+  test("an unreadable project index stops a publish (absent = a new project)", () => {
+    expect(publish("aaa1111", "2026-11-04T10:00:00Z").status).toBe(0);
+    writeFileSync(join(tmp, "aws.log"), "");
+    const r = publish("bbb2222", "2026-11-05T10:00:00Z", [], { FAKE_AWS_FAIL_READ: "passport/index.json" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("cannot read");
+    expect(writes()).toEqual([]);
+  });
+
+  test("the single file runs on its own (copied out of the repo)", () => {
+    const lone = join(tmp, "3d-publish.sh");
+    writeFileSync(lone, scriptText);
+    const r = spawnSync("bash", [lone, "--validate-brief", briefFile("ok.md")], { encoding: "utf-8" });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("ok ");
+    const bad = spawnSync("bash", [lone, "--validate-brief", briefFile("bad.md", "nope")], { encoding: "utf-8" });
+    expect(bad.status).toBe(1);
   });
 
   test.each(["index.json", "brief.json", "status.json", "..", "a/b"])("refuses --rev %s", (rev) => {
@@ -291,7 +338,8 @@ describe("briefs", () => {
     writeFileSync(join(tmp, "aws.log"), "");
   });
 
-  test("--brief on a published rev uploads brief.json, brief.md and status.json and adds the banner", () => {
+  test("--brief on a published rev writes only brief.json, brief.md, status.json and the indexes", () => {
+    const before = snapshot();
     const r = sh([
       "--project",
       "passport",
@@ -330,17 +378,20 @@ describe("briefs", () => {
     expect(json("index.json").projects[0].revisions.find((r: any) => r.rev === "bbb2222").brief.sha256).toBe(
       e.brief.sha256,
     );
-    const page = obj("passport/bbb2222/index.html");
-    expect(page.match(/3d-status-banner:start/g)).toHaveLength(1);
-    expect(page.indexOf("3d-status-banner:end")).toBeLessThan(page.indexOf("</body>"));
+    expect(changed(before, snapshot())).toEqual([
+      "index.json",
+      "passport/bbb2222/brief.json",
+      "passport/bbb2222/brief.md",
+      "passport/bbb2222/status.json",
+      "passport/index.json",
+    ]);
+    expect(calls().some((c) => c[1] === "sync")).toBe(false);
     expect(invalidated()).toEqual([
       "/index.json",
       "/passport/index.json",
       "/passport/bbb2222/brief.json",
       "/passport/bbb2222/brief.md",
       "/passport/bbb2222/status.json",
-      "/passport/bbb2222/",
-      "/passport/bbb2222/index.html",
     ]);
   });
 
@@ -395,43 +446,52 @@ describe("briefs", () => {
     expect(writes()).toEqual([]);
   });
 
-  test("a brief ships with a publish; a re-publish keeps brief and status files and the overlay", () => {
+  test("a brief ships with a publish; a later re-publish is refused and leaves every file", () => {
     const dir = viewer("v-ccc");
+    const args = ["--project", "passport", "--rev", "ccc3333", "--dir", dir, "--date", "2026-11-06T09:00:00Z"];
+    let r = sh([...args, "--brief", briefFile("b.md")]);
+    expect(r.status).toBe(0);
+    expect(entry("ccc3333").status.at).toBe("2026-11-06T09:00:00Z"); // --at defaults to --date
+    expect(entry("ccc3333").brief.title).toBe("Book, MJF 13.75, shifter");
+    const page = obj("passport/ccc3333/index.html");
+    expect(page.match(/3d-status-banner:start/g)).toHaveLength(1);
+    expect(page.indexOf("3d-status-banner:end")).toBeLessThan(page.indexOf("</body>"));
+    const before = snapshot();
+    r = sh(args);
+    expect(r.status).toBe(2);
+    expect(changed(before, snapshot())).toEqual([]);
+  });
+
+  test("a set status survives a later first brief, and the history is never reset", () => {
     let r = sh([
       "--project",
       "passport",
-      "--rev",
-      "ccc3333",
-      "--dir",
-      dir,
-      "--date",
-      "2026-11-06T09:00:00Z",
-      "--brief",
-      briefFile("b.md"),
+      "--set-status",
+      "bbb2222",
+      "concept",
+      "--reason",
+      "first",
+      "--at",
+      "2026-11-05T11:00:00Z",
     ]);
     expect(r.status).toBe(0);
-    expect(entry("ccc3333").status.at).toBe("2026-11-06T09:00:00Z"); // --at defaults to --date
-    expect(obj("passport/ccc3333/index.html")).toContain("3d-status-banner");
+    r = sh(["--project", "passport", "--rev", "bbb2222", "--brief", briefFile("b.md"), "--at", "2026-11-05T12:00:00Z"]);
+    expect(r.status).toBe(0);
+    const doc = json("passport/bbb2222/status.json");
+    expect(doc.history).toEqual([{ value: "concept", at: "2026-11-05T11:00:00Z", reason: "first" }]);
+    expect(entry("bbb2222").status.value).toBe("concept");
     r = sh([
       "--project",
       "passport",
-      "--rev",
-      "ccc3333",
-      "--dir",
-      dir,
-      "--date",
-      "2026-11-06T09:00:00Z",
+      "--set-status",
+      "bbb2222",
+      "checked",
+      "--reason",
+      "fit",
       "--at",
-      "2026-11-07T00:00:00Z",
+      "2026-11-05T13:00:00Z",
     ]);
-    expect(r.status).toBe(0);
-    expect(has("passport/ccc3333/brief.json")).toBe(true);
-    expect(has("passport/ccc3333/status.json")).toBe(true);
-    const e = entry("ccc3333");
-    expect(e.brief.title).toBe("Book, MJF 13.75, shifter");
-    expect(e.status.value).toBe("checked");
-    expect(e.updated).toBe("2026-11-07T00:00:00Z");
-    expect(obj("passport/ccc3333/index.html").match(/3d-status-banner:start/g)).toHaveLength(1);
+    expect(json("passport/bbb2222/status.json").history.map((h: any) => h.value)).toEqual(["checked", "concept"]);
   });
 
   test("a brief lists renders already on the bucket for an older revision", () => {
@@ -507,8 +567,8 @@ describe("--set-status", () => {
     expect(e.supersededBy).toBe("bbb2222");
     expect(e.updated).toBe("2026-11-05T10:00:00Z");
     expect(e.statusHistory).toBeUndefined(); // history lives in status.json only
-    expect(obj("passport/aaa1111/index.html")).toContain("3d-status-banner");
     expect(invalidated()).toContain("/passport/aaa1111/status.json");
+    expect(calls().some((c) => c[1] === "sync" || (c[1] === "cp" && c[3]?.endsWith("index.html")))).toBe(false);
 
     writeFileSync(join(tmp, "aws.log"), "");
     expect(

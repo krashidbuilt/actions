@@ -218,22 +218,27 @@ first, bounded by bytes. Change it without a new revision:
 scripts/3d-publish.sh --project passport --rev 16cd948-book-mjf-shifter --brief cad/enclosure/briefs/16cd948-book-mjf-shifter.md
 scripts/3d-publish.sh --project passport --set-status 16cd948-book-mjf-shifter superseded \
   --superseded-by 75d6682-book-mjf-shifter --reason "replaced by the controls v3 set" [--at ISO]
-python3 scripts/3d-publish.py brief validate cad/enclosure/briefs/*.md   # check briefs in CI
+scripts/3d-publish.sh --validate-brief cad/enclosure/briefs/*.md   # check briefs (CI); python3 only
 ```
 
 `brief.json` and `status.json` are the source of truth. The index entry gets a copy (`brief`
 with title, summary and plain excerpts, `status`, `statusPath`, `parent`, `supersededBy`,
-`renders`, and `updated`, the latest publish, brief or status change) so the site can sort. A
-revision with a status gets a one-line "Superseded by <rev>" banner in its own page, read from
-its `status.json`, so a single-revision link shows it too. `index.json`, `brief.json` and
-`status.json` can never be revision ids.
+`renders`, and `updated`, the latest publish, brief or status change, never a reskin or a note)
+so the site can sort. A brief or status change writes only `brief.json`, `brief.md`,
+`status.json` and the two indexes, never the revision folder. Every page published from this
+version carries a one-line banner that reads its own `status.json` at view time, so a
+single-revision link shows "Superseded by <rev>" too (pages published before it don't have the
+banner). `index.json`, `brief.json` and `status.json` can never be revision ids. The python
+helper is embedded in the script, so a single copied file (`git show
+origin/develop:scripts/3d-publish.sh > /tmp/3d-publish.sh`) still runs.
 
 **Index contract.** `/index.json` is `{"projects":[{"id","title","revisions":[{"rev","date","title","path":"/<p>/<rev>/","thumb":"/<p>/<rev>/renders/<png>"|null}]}]}`.
 Revisions are newest first by `date`, and `/<project>/index.json` is one element of `projects`.
 The brief and status fields above are optional additions; readers ignore what they don't know.
 
-**Revisions are immutable.** A new sha gets a new folder. Re-publishing the same rev replaces
-only that folder. Revision files are cached for a year. The index files are no-cache, and every
+**Revisions are immutable.** A new sha gets a new folder. Publishing a rev that is already in the
+index is refused: attach or correct its brief with `--brief`, change its status with
+`--set-status`, or publish new files under a new `--rev`. Revision files are cached for a year. The index files are no-cache, and every
 publish invalidates `/index.json`, `/index.html`, `/` and `/<project>/*`.
 
 ## Slack deploy notifications
