@@ -243,6 +243,61 @@ index is refused: attach or correct its brief with `--brief`, change its status 
 `--set-status`, or publish new files under a new `--rev`. Revision files are cached for a year. The index files are no-cache, and every
 publish invalidates `/index.json`, `/index.html`, `/` and `/<project>/*`.
 
+### reusable-cdk-deploy.yml
+
+Runs `cdk diff` or `cdk deploy` for one CDK app in the caller repo (an infra repo, e.g.
+krashidbuilt/infrastructure's `bun bin/platform.ts`). A PR runs `diff`: the output goes to the run
+log and to a PR comment inside `<details>`, and stacks that differ never fail the job (no `--fail`);
+a synth or auth error still does. A merge runs `deploy`: `--all` (or `stacks`),
+`--require-approval never`, `--concurrency <n>`.
+
+```yaml
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    uses: krashidbuilt/actions/.github/workflows/reusable-cdk-deploy.yml@v1
+    secrets: inherit
+    with: { app: bun bin/platform.ts, mode: diff, aws_account_id: "123456789012", role_scope: infra }
+  deploy:
+    if: github.event_name == 'push'
+    uses: krashidbuilt/actions/.github/workflows/reusable-cdk-deploy.yml@v1
+    secrets: inherit
+    with: { app: bun bin/platform.ts, mode: deploy, aws_account_id: "123456789012", role_scope: infra, verify_command: bun run verify }
+```
+
+| Input | Default | What it does |
+| --- | --- | --- |
+| `app` | required | `--app "<app>"` |
+| `mode` | required | `diff` or `deploy`; anything else fails the first step |
+| `aws_account_id`, `role_scope` | `""` | configure-aws assumes `arn:aws:iam::<account>:role/deploy-<scope>` (`infra` → deploy-infra) |
+| `role_arn` | `""` | Passed through unchanged, for a role that isn't `deploy-<scope>`; wins over account + scope |
+| `environment` | `production` | configure-aws requires alpha/beta/production; it only names the STS session (`gitea-actions-<env>`) and the log line |
+| `context` | `""` | One `key=value` per line, each passed as `--context` |
+| `stacks` | `""` (`--all`) | Whitespace-separated stack ids |
+| `concurrency` | `4` | `cdk deploy --concurrency <n>` (the CLI default is 1); deploy only |
+| `aws_region` | `us-east-1` | |
+| `working_directory` | `.` | Has package.json + cdk.json; install and cdk run here |
+| `verify_command` | `""` (skip) | Run before diff/deploy, e.g. `bun run verify` |
+| `cdk_version`, `node_version`, `bun_version`, `package_manager` | `2`, `24`, `1.3.5`, `auto` | As in reusable-deploy-backend |
+
+Outputs: `mode`, and `diff_comment_url` (empty when no comment was posted).
+
+- **Auth.** The caller's `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (`secrets: inherit`) go to the
+  configure-aws step only. With a role (account + scope, or `role_arn`) they sign an STS AssumeRole
+  and every later step runs as that role; with none they are used as-is. On GitHub, no keys + a
+  role means OIDC, and the caller grants `id-token: write`. A `Who am I` step prints
+  `aws sts get-caller-identity` before cdk runs.
+- **Concurrency.** Deploys share the group `cdk-<account>`, so runs of one repo deploy to one
+  account one at a time (Gitea scopes groups per repository). Diffs get their own group per ref,
+  because Gitea cancels a run already waiting in a group when a third arrives, and a PR diff must
+  not cancel a queued deploy.
+- **No `--no-rollback`.** reusable-deploy-backend passes it; infra doesn't, so a failed stack rolls
+  back to its last good state. A mid-run failure leaves the stacks that already finished updated
+  and the rest untouched. They're independent, so a rerun finishes the job.
+- **The PR comment** is capped at 60000 bytes with a pointer to the run log. It posts with
+  `github.token`; if that fails (a fork PR's read-only token, say), the step warns and the diff
+  stays in the log. Outside a pull_request event there is no comment.
+
 ## Slack deploy notifications
 
 Every reusable deploy and publish workflow posts a card to Slack, the same card
