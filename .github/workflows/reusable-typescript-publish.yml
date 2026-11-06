@@ -69,6 +69,21 @@ on:
       create_release:
         type: boolean
         default: true
+      tag_prefix:
+        # Prefix of the version tags (tag = <prefix><version>); passed to both
+        # versioning calls, which read and write only tags with this prefix.
+        # The default is the repo's own vX.Y.Z line. A repo that publishes more
+        # than one package gives each one its own prefix (e.g. review-access-v)
+        # so the packages do not race each other for the same tags.
+        type: string
+        default: "v"
+      dist_tag:
+        # npm dist-tag for the publish. Empty = mapped from the branch
+        # (develop -> alpha, staging -> beta, anything else -> latest), which
+        # maps develop to alpha whatever production_branch says. A package
+        # whose production_branch is develop sets this to latest.
+        type: string
+        default: ""
     secrets:
       SLACK_BOT_TOKEN:
         description: "Slack bot token for the release card (chat:write, channels:read). Optional: absent = no card."
@@ -139,6 +154,7 @@ jobs:
           update_version_file: false
           release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
+          tag_prefix: ${{ inputs.tag_prefix }}
       # An empty version means versioning found no bump-worthy commits since the
       # last tag, and there is nothing to release. Publishing anyway is not a
       # no-op: publish falls back to package.json, which on a repo that does not
@@ -149,7 +165,7 @@ jobs:
         if: steps.version.outputs.version != ''
         with:
           working_directory: ${{ inputs.working_directory }}
-          tag: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest' }}
+          tag: ${{ inputs.dist_tag || (github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || 'latest') }}
           use_oidc: ${{ inputs.use_oidc }}
           skip_build: ${{ inputs.skip_build }}
           # The number computed above. Without this, publish would ship whatever
@@ -169,6 +185,7 @@ jobs:
           update_version_file: ${{ inputs.update_version_file }}
           release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
+          tag_prefix: ${{ inputs.tag_prefix }}
       # Slack release card (no pending card: a publish is quick). Posted for every
       # release and every failed run; a no-op without SLACK_BOT_TOKEN.
       - name: Slack (result)

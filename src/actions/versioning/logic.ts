@@ -13,6 +13,7 @@ import {
   bumpVersion,
   common,
   configureGitIdentity,
+  DEFAULT_TAG_PREFIX,
   determineBumpTypeFromCommits,
   getLatestGitTag,
   getLatestPrereleaseTagForVersion,
@@ -20,6 +21,7 @@ import {
   Logger,
   parseVersion,
   readProjectVersion,
+  stripTagPrefix,
   tagExists,
   type VersionBumpType,
 } from "../../core/index.js";
@@ -42,15 +44,27 @@ export interface VersioningInputs {
   gitUserEmail: string;
   dryRun: boolean;
   promoteFrom: string;
+  /** Prefix of the version tags read and written (default `v`). */
+  tagPrefix: string;
   /** True when promote_from is set but prerelease_identifier is empty (promote to stable release). */
   promoteToStable: boolean;
 }
+
+/** Characters allowed in a tag prefix: a safe subset of what git accepts in a ref name. */
+const TAG_PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 export function getInputs(): VersioningInputs {
   const dryRun = core.getInput("dry_run") === "true";
   const token = core.getInput("github_token");
   if (!token && !dryRun) {
     throw new Error("github_token is required (unless dry_run is true)");
+  }
+
+  const tagPrefix = core.getInput("tag_prefix") || DEFAULT_TAG_PREFIX;
+  if (!TAG_PREFIX_PATTERN.test(tagPrefix)) {
+    throw new Error(
+      `Invalid tag_prefix "${tagPrefix}": use letters, digits, '.', '_', '/' or '-', starting with a letter or digit`,
+    );
   }
 
   return {
@@ -69,6 +83,7 @@ export function getInputs(): VersioningInputs {
     gitUserEmail: git.userEmail(),
     dryRun,
     promoteFrom: core.getInput("promote_from") || "",
+    tagPrefix,
     promoteToStable: !core.getInput("prerelease_identifier") && !!core.getInput("promote_from"),
   };
 }
@@ -92,21 +107,44 @@ export function compareVersions(v1: string, v2: string): number {
 }
 
 /**
- * Get commits since last tag and determine bump type.
+ * Run a `git log` and return its stdout. With `scopeDir`, git runs in that directory
+ * with a `-- .` pathspec, so only commits touching it are listed.
  */
-export async function determineBumpType(latestTag: string | null): Promise<VersionBumpType | "none"> {
+async function readGitLog(args: string[], scopeDir?: string): Promise<string> {
   let commitLog = "";
 
-  const args = latestTag ? ["log", `${latestTag}..HEAD`, "--oneline"] : ["log", "--oneline", "-20"];
-
-  await exec.exec("git", args, {
+  await exec.exec("git", scopeDir ? [...args, "--", "."] : args, {
     listeners: {
       stdout: (data) => {
         commitLog += data.toString();
       },
     },
     silent: true,
+    ...(scopeDir ? { cwd: scopeDir } : {}),
   });
+
+  return commitLog;
+}
+
+/**
+ * The directory the commit range is scoped to: the working directory when the tag
+ * prefix is non-default (one of several packages in a repo), otherwise none, so
+ * `v`-tagged repos keep counting every commit.
+ */
+export function commitScope(inputs: Pick<VersioningInputs, "tagPrefix">, workingDir: string): string | undefined {
+  return inputs.tagPrefix === DEFAULT_TAG_PREFIX ? undefined : workingDir;
+}
+
+/**
+ * Get commits since last tag and determine bump type.
+ * With `scopeDir`, only commits touching that directory count.
+ */
+export async function determineBumpType(
+  latestTag: string | null,
+  scopeDir?: string,
+): Promise<VersionBumpType | "none"> {
+  const args = latestTag ? ["log", `${latestTag}..HEAD`, "--oneline"] : ["log", "--oneline", "-20"];
+  const commitLog = await readGitLog(args, scopeDir);
 
   const commits = commitLog
     .trim()
@@ -117,23 +155,14 @@ export async function determineBumpType(latestTag: string | null): Promise<Versi
 }
 
 /**
- * Generate changelog from commits
+ * Generate changelog from commits.
+ * With `scopeDir`, only commits touching that directory are listed.
  */
-export async function generateChangelog(latestTag: string | null): Promise<string> {
-  let commitLog = "";
-
+export async function generateChangelog(latestTag: string | null, scopeDir?: string): Promise<string> {
   const args = latestTag
     ? ["log", `${latestTag}..HEAD`, "--pretty=format:- %s (%h)"]
     : ["log", "--pretty=format:- %s (%h)", "-20"];
-
-  await exec.exec("git", args, {
-    listeners: {
-      stdout: (data) => {
-        commitLog += data.toString();
-      },
-    },
-    silent: true,
-  });
+  const commitLog = await readGitLog(args, scopeDir);
 
   return commitLog.trim() || "No changes recorded.";
 }
@@ -164,12 +193,15 @@ export async function run(): Promise<void> {
     await configureGitIdentity(inputs.gitUserName, inputs.gitUserEmail, { silent: false });
 
     // Tag-driven versioning: prefer latest stable tag, fall back to package.json for bootstrap
-    const latestStableTag = await getLatestGitTag(true);
-    const packageVersion = latestStableTag ? latestStableTag.replace(/^v/, "") : readProjectVersion(workingDir);
+    const latestStableTag = await getLatestGitTag(true, inputs.tagPrefix);
+    const packageVersion = latestStableTag
+      ? stripTagPrefix(latestStableTag, inputs.tagPrefix)
+      : readProjectVersion(workingDir);
 
     logger.info("Current state", {
       packageVersion,
       latestStableTag,
+      tagPrefix: inputs.tagPrefix,
       versionSource: latestStableTag ? "git tag" : "package.json (bootstrap)",
       isPrerelease: inputs.releasePrerelease,
     });
@@ -197,12 +229,12 @@ export async function run(): Promise<void> {
         target: inputs.promoteToStable ? "(stable)" : inputs.prereleaseIdentifier,
       });
 
-      const tag = `v${promotedVersion}`;
+      const tag = `${inputs.tagPrefix}${promotedVersion}`;
       const isPrerelease = promotedVersion.includes("-");
 
       let changelog = "";
       if (inputs.generateChangelog) {
-        changelog = await generateChangelog(latestStableTag);
+        changelog = await generateChangelog(latestStableTag, commitScope(inputs, workingDir));
         logger.info("Generated changelog", { referenceTag: latestStableTag });
       }
 
@@ -224,7 +256,7 @@ export async function run(): Promise<void> {
       if (inputs.updateVersionFile) {
         await updateVersionFile(workingDir, promotedVersion);
         await exec.exec("git", ["add", "-A"], { cwd: workingDir });
-        await exec.exec("git", ["commit", "-m", `chore(release): v${promotedVersion}`]);
+        await exec.exec("git", ["commit", "-m", `chore(release): ${tag}`]);
         logger.info(`Committed promoted version to ${promotedVersion}`);
       }
 
@@ -301,7 +333,7 @@ export async function run(): Promise<void> {
     // Determine bump type once (used by both prerelease and stable paths)
     let bumpType: VersionBumpType | "none";
     if (inputs.bumpType === "auto") {
-      bumpType = await determineBumpType(latestStableTag);
+      bumpType = await determineBumpType(latestStableTag, commitScope(inputs, workingDir));
       logger.info(`Auto-detected bump type: ${bumpType}`, { referenceTag: latestStableTag });
     } else {
       bumpType = inputs.bumpType;
@@ -314,11 +346,15 @@ export async function run(): Promise<void> {
 
       logger.info(`Prerelease base: ${packageVersion} + ${effectiveBump} -> ${nextStableBase}`);
 
-      const latestPrereleaseTag = await getLatestPrereleaseTagForVersion(nextStableBase, inputs.prereleaseIdentifier);
+      const latestPrereleaseTag = await getLatestPrereleaseTagForVersion(
+        nextStableBase,
+        inputs.prereleaseIdentifier,
+        inputs.tagPrefix,
+      );
 
       let nextPrereleaseNum: number;
       if (latestPrereleaseTag) {
-        const parsed = parseVersion(latestPrereleaseTag.replace(/^v/, ""));
+        const parsed = parseVersion(latestPrereleaseTag, inputs.tagPrefix);
         const prereleaseMatch = parsed.prerelease?.match(new RegExp(`^${inputs.prereleaseIdentifier}\\.(\\d+)$`));
         nextPrereleaseNum = prereleaseMatch ? Number.parseInt(prereleaseMatch[1], 10) + 1 : 1;
         logger.info(
@@ -335,7 +371,7 @@ export async function run(): Promise<void> {
       const maxAttempts = 10;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         newVersion = `${nextStableBase}-${inputs.prereleaseIdentifier}.${nextPrereleaseNum}`;
-        const candidateTag = `v${newVersion}`;
+        const candidateTag = `${inputs.tagPrefix}${newVersion}`;
 
         if (await tagExists(candidateTag)) {
           logger.warn(`Tag ${candidateTag} already exists, trying next...`);
@@ -346,7 +382,9 @@ export async function run(): Promise<void> {
         }
 
         if (attempt === maxAttempts - 1) {
-          throw new Error(`Could not find available version after ${maxAttempts} attempts. Last tried: v${newVersion}`);
+          throw new Error(
+            `Could not find available version after ${maxAttempts} attempts. Last tried: ${candidateTag}`,
+          );
         }
       }
     } else {
@@ -366,7 +404,7 @@ export async function run(): Promise<void> {
       logger.info(`Bumping version: ${packageVersion} -> ${newVersion} (${bumpType})`);
     }
 
-    const tag = `v${newVersion}`;
+    const tag = `${inputs.tagPrefix}${newVersion}`;
     const isPrerelease = inputs.releasePrerelease || newVersion.includes("-");
 
     // Generate changelog
@@ -375,9 +413,10 @@ export async function run(): Promise<void> {
       // For prereleases, derive nextStableBase again for the changelog ref lookup
       const changelogBase = inputs.releasePrerelease ? newVersion.replace(/-.*$/, "") : undefined;
       const changelogRef = inputs.releasePrerelease
-        ? (await getLatestPrereleaseTagForVersion(changelogBase!, inputs.prereleaseIdentifier)) || latestStableTag
+        ? (await getLatestPrereleaseTagForVersion(changelogBase!, inputs.prereleaseIdentifier, inputs.tagPrefix)) ||
+          latestStableTag
         : latestStableTag;
-      changelog = await generateChangelog(changelogRef);
+      changelog = await generateChangelog(changelogRef, commitScope(inputs, workingDir));
       logger.info("Generated changelog", { referenceTag: changelogRef });
     }
 
@@ -426,7 +465,7 @@ export async function run(): Promise<void> {
     if (inputs.updateVersionFile) {
       await updateVersionFile(workingDir, newVersion);
       await exec.exec("git", ["add", "-A"], { cwd: workingDir });
-      await exec.exec("git", ["commit", "-m", `chore(release): v${newVersion}`]);
+      await exec.exec("git", ["commit", "-m", `chore(release): ${tag}`]);
       logger.info(`Committed version bump to ${newVersion}`);
     }
 

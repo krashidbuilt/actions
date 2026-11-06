@@ -56,6 +56,8 @@ on push and pull_request. Same checks, no publish, no secret.
 - **Seed a tag matching `package.json`** (`git tag v0.1.0 && git push origin v0.1.0`).
   With no tags the versioning action reads the last 20 commits, and a single
   `!:` or `BREAKING CHANGE` in that window makes the first release `1.0.0`.
+  With a `tag_prefix`, the seed tag is `<prefix><version>`
+  (`git tag review-access-v0.1.0`): the action ignores tags without its prefix.
 - **Check `has_actions`.** A repo can have Actions disabled, in which case the
   workflow sits on `main` and nothing ever runs, with no error anywhere —
   imessagecli was in that state. `curl -H "Authorization: token $T"
@@ -103,7 +105,23 @@ jobs:
       app_name: ctrl
 ```
 
-Permissions (`contents: write`) are declared inside the reusable workflow — callers don't need them. AWS auth uses long-lived access keys passed in via `secrets.AWS_ACCESS_KEY_ID` / `secrets.AWS_SECRET_ACCESS_KEY` (set at the org level). Environment and prerelease identifier are auto-detected from the branch.
+Permissions (`contents: write`) are declared inside the reusable workflow — callers don't need them. AWS auth starts from the deployer keys in `secrets.AWS_ACCESS_KEY_ID` / `secrets.AWS_SECRET_ACCESS_KEY` (set at the org level) and goes through `utilities/configure-aws`. With `role_arn` empty (the default) the deploy uses those keys directly, as before. Set `role_arn` to a full role ARN (e.g. `arn:aws:iam::<account>:role/deploy-app`) and the static key signs an STS AssumeRole, and every later step runs as that role's short-lived session. A `Who am I` step logs the active identity (`Deploying as: arn:aws:sts::<account>:assumed-role/deploy-app/gitea-actions-<env>`), and fails the job if `role_arn` is set but the identity is not an assumed-role session. Environment and prerelease identifier are auto-detected from the branch.
+
+### reusable-deploy-backend.yml
+
+CDK backend deploy: setup → install → detect environment → AWS auth → optional verify → build → `cdk deploy`. `stack_name` may carry an `{ENV}` token (replaced with `Alpha`/`Beta`/`Production`); `cdk_context` adds `--context key=value` lines, and `channel=<env>` is always injected.
+
+```yaml
+jobs:
+  deploy:
+    uses: krashidbuilt/actions/.github/workflows/reusable-deploy-backend.yml@v1
+    secrets: inherit
+    with:
+      stack_name: MyApp{ENV}Stack
+      role_arn: arn:aws:iam::123456789012:role/deploy-app   # optional
+```
+
+AWS auth works the same as the frontend workflow: the org-level deployer keys go through `utilities/configure-aws`, used directly when `role_arn` is empty (the default, and today's behaviour) or used to assume `role_arn` when set. The `Who am I` step logs which identity the deploy runs as.
 
 ### reusable-deploy-mobile.yml
 
@@ -172,7 +190,23 @@ jobs:
       working_directory: packages/my-lib
 ```
 
-npm dist-tag is auto-mapped: develop → `alpha`, staging → `beta`, production → `latest`.
+npm dist-tag is auto-mapped unless `dist_tag` is set: develop → `alpha`, staging → `beta`, production → `latest`.
+
+- **`tag_prefix`** (default `v`) is the prefix of the version tags, passed to both
+  versioning calls. They read and write only `<prefix>X.Y.Z` tags, so a second
+  package in the same repo gets its own release line instead of racing the repo's
+  `vX.Y.Z` tags.
+- **`dist_tag`** (default empty = the mapping above) sets the npm dist-tag outright.
+  The mapping sends `develop` to `alpha` whatever `production_branch` says, so a
+  package released from `develop` sets `dist_tag: latest`.
+
+```yaml
+    with:
+      working_directory: packages/review-access
+      production_branch: develop
+      tag_prefix: review-access-v   # tags review-access-v1.2.3, not v1.2.3
+      dist_tag: latest
+```
 
 ### reusable-3d-publish.yml
 
@@ -205,12 +239,100 @@ AWS_PROFILE=krashidbuilt scripts/3d-publish.sh --project passport --project-titl
   --dir cad/enclosure/out/viewer --renders cad/enclosure/renders [--thumb face_on.png] [--date ISO] [--dry-run]
 ```
 
+**Briefs and status.** A revision can carry a brief: a markdown file with a small front matter
+(title, one-line summary, `status`, optional `status_reason`, `parent`, `superseded_by`,
+`numbers` and `links`) and the sections `## What changed`, `## Limitations` and
+`## Recommendation`. `--brief` (workflow input `brief`) validates it before anything is uploaded
+and publishes `/<project>/<rev>/brief.json` + `brief.md`. The brief is fixed with the revision;
+its status is not. `/<project>/<rev>/status.json` holds the current status (`concept`, `checked`,
+`recommended`, `superseded`, `signed-off`), dated and with a reason, and the history newest
+first, bounded by bytes. Change it without a new revision:
+
+```sh
+scripts/3d-publish.sh --project passport --rev 16cd948-book-mjf-shifter --brief cad/enclosure/briefs/16cd948-book-mjf-shifter.md
+scripts/3d-publish.sh --project passport --set-status 16cd948-book-mjf-shifter superseded \
+  --superseded-by 75d6682-book-mjf-shifter --reason "replaced by the controls v3 set" [--at ISO]
+scripts/3d-publish.sh --validate-brief cad/enclosure/briefs/*.md   # check briefs (CI); python3 only
+```
+
+`brief.json` and `status.json` are the source of truth. The index entry gets a copy (`brief`
+with title, summary and plain excerpts, `status`, `statusPath`, `parent`, `supersededBy`,
+`renders`, and `updated`, the latest publish, brief or status change, never a reskin or a note)
+so the site can sort. A brief or status change writes only `brief.json`, `brief.md`,
+`status.json` and the two indexes (all `no-cache`), deletes nothing, never touches the revision
+folder, and invalidates exactly the paths it wrote. Each status entry records the `run` that
+wrote it. Every page published from this
+version carries a one-line banner that reads its own `status.json` at view time, so a
+single-revision link shows "Superseded by <rev>" too (pages published before it don't have the
+banner). `index.json`, `brief.json` and `status.json` can never be revision ids. The python
+helper is embedded in the script, so a single copied file (`git show
+origin/develop:scripts/3d-publish.sh > /tmp/3d-publish.sh`) still runs.
+
 **Index contract.** `/index.json` is `{"projects":[{"id","title","revisions":[{"rev","date","title","path":"/<p>/<rev>/","thumb":"/<p>/<rev>/renders/<png>"|null}]}]}`.
 Revisions are newest first by `date`, and `/<project>/index.json` is one element of `projects`.
+The brief and status fields above are optional additions; readers ignore what they don't know.
 
-**Revisions are immutable.** A new sha gets a new folder. Re-publishing the same rev replaces
-only that folder. Revision files are cached for a year. The index files are no-cache, and every
+**Revisions are immutable.** A new sha gets a new folder. Publishing a rev that is already in the
+index is refused: attach or correct its brief with `--brief`, change its status with
+`--set-status`, or publish new files under a new `--rev`. Revision files are cached for a year. The index files are no-cache, and every
 publish invalidates `/index.json`, `/index.html`, `/` and `/<project>/*`.
+
+### reusable-cdk-deploy.yml
+
+Runs `cdk diff` or `cdk deploy` for one CDK app in the caller repo (an infra repo, e.g.
+krashidbuilt/infrastructure's `bun bin/platform.ts`). A PR runs `diff` with `--method=template`, a
+template-only diff: no change set, no template upload, so a PR writes nothing to the account;
+replacement detection comes from the resource spec. The output goes to the run log and to a PR
+comment inside `<details>`, and stacks that differ never fail the job (no `--fail`); a synth or
+auth error still does. A merge runs `deploy`: `--all` (or `stacks`),
+`--require-approval never`, `--concurrency <n>`.
+
+```yaml
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    uses: krashidbuilt/actions/.github/workflows/reusable-cdk-deploy.yml@v1
+    secrets: inherit
+    with: { app: bun bin/platform.ts, mode: diff, aws_account_id: "123456789012", role_scope: infra }
+  deploy:
+    if: github.event_name == 'push'
+    uses: krashidbuilt/actions/.github/workflows/reusable-cdk-deploy.yml@v1
+    secrets: inherit
+    with: { app: bun bin/platform.ts, mode: deploy, aws_account_id: "123456789012", role_scope: infra, verify_command: bun run verify }
+```
+
+| Input | Default | What it does |
+| --- | --- | --- |
+| `app` | required | `--app "<app>"` |
+| `mode` | required | `diff` or `deploy`; anything else fails the first step |
+| `aws_account_id`, `role_scope` | `""` | configure-aws assumes `arn:aws:iam::<account>:role/deploy-<scope>` (`infra` → deploy-infra) |
+| `role_arn` | `""` | Passed through unchanged, for a role that isn't `deploy-<scope>`; wins over account + scope |
+| `environment` | `production` | configure-aws requires alpha/beta/production; it only names the STS session (`gitea-actions-<env>`) and the log line |
+| `context` | `""` | One `key=value` per line, each passed as `--context` |
+| `stacks` | `""` (`--all`) | Whitespace-separated stack ids |
+| `concurrency` | `4` | `cdk deploy --concurrency <n>` (the CLI default is 1); deploy only |
+| `aws_region` | `us-east-1` | |
+| `working_directory` | `.` | Has package.json + cdk.json; install and cdk run here |
+| `verify_command` | `""` (skip) | Run before diff/deploy, e.g. `bun run verify` |
+| `cdk_version`, `node_version`, `bun_version`, `package_manager` | `2`, `24`, `1.3.5`, `auto` | As in reusable-deploy-backend |
+
+Outputs: `mode`, and `diff_comment_url` (empty when no comment was posted).
+
+- **Auth.** The caller's `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (`secrets: inherit`) go to the
+  configure-aws step only. With a role (account + scope, or `role_arn`) they sign an STS AssumeRole
+  and every later step runs as that role; with none they are used as-is. On GitHub, no keys + a
+  role means OIDC, and the caller grants `id-token: write`. A `Who am I` step prints
+  `aws sts get-caller-identity` before cdk runs.
+- **Concurrency.** Deploys share the group `cdk-<account>`, so runs of one repo deploy to one
+  account one at a time (Gitea scopes groups per repository). Diffs get their own group per ref,
+  because Gitea cancels a run already waiting in a group when a third arrives, and a PR diff must
+  not cancel a queued deploy.
+- **No `--no-rollback`.** reusable-deploy-backend passes it; infra doesn't, so a failed stack rolls
+  back to its last good state. A mid-run failure leaves the stacks that already finished updated
+  and the rest untouched. They're independent, so a rerun finishes the job.
+- **The PR comment** is capped at 60000 bytes with a pointer to the run log. It posts with
+  `github.token`; if that fails (a fork PR's read-only token, say), the step warns and the diff
+  stays in the log. Outside a pull_request event there is no comment.
 
 ## Slack deploy notifications
 
@@ -284,7 +406,11 @@ bun run test               # Vitest
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     prerelease_identifier: alpha  # or beta
+    tag_prefix: v                 # default; tags are <prefix><version>. With any other prefix, only commits touching working_directory count toward the bump and the changelog
 ```
+
+Set `tag_prefix` (e.g. `my-package-v`) when one repo versions more than one package:
+the action then reads and writes only tags with that prefix.
 
 ### TypeScript
 

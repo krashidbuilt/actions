@@ -49,6 +49,7 @@ const {
   mockGitUserEmail,
   mockParseVersion,
   mockReadProjectVersion,
+  mockStripTagPrefix,
   mockTagExists,
   mockLoggerInfo,
 } = vi.hoisted(() => ({
@@ -60,8 +61,8 @@ const {
   mockGetLatestPrereleaseTagForVersion: vi.fn(async () => null as string | null),
   mockGitUserName: vi.fn(() => "github-actions[bot]"),
   mockGitUserEmail: vi.fn(() => "github-actions[bot]@users.noreply.github.com"),
-  mockParseVersion: vi.fn((v: string) => {
-    const normalized = v.replace(/^v/, "");
+  mockParseVersion: vi.fn((v: string, prefix = "v") => {
+    const normalized = prefix === "v" ? v.replace(/^v/, "") : v.startsWith(prefix) ? v.slice(prefix.length) : v;
     const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/);
     if (!match) throw new Error(`Invalid version format: ${v}`);
     return {
@@ -72,6 +73,9 @@ const {
     };
   }),
   mockReadProjectVersion: vi.fn(() => "1.0.0"),
+  mockStripTagPrefix: vi.fn((v: string, prefix = "v") =>
+    prefix === "v" ? v.replace(/^v/, "") : v.startsWith(prefix) ? v.slice(prefix.length) : v,
+  ),
   mockTagExists: vi.fn(async () => false),
   mockLoggerInfo: vi.fn(),
 }));
@@ -80,6 +84,7 @@ vi.mock("../../core/index.js", () => ({
   bumpVersion: mockBumpVersion,
   common: { workingDirectory: mockCommonWorkingDirectory },
   configureGitIdentity: mockConfigureGitIdentity,
+  DEFAULT_TAG_PREFIX: "v",
   determineBumpTypeFromCommits: mockDetermineBumpTypeFromCommits,
   getLatestGitTag: mockGetLatestGitTag,
   getLatestPrereleaseTagForVersion: mockGetLatestPrereleaseTagForVersion,
@@ -92,10 +97,19 @@ vi.mock("../../core/index.js", () => ({
   },
   parseVersion: mockParseVersion,
   readProjectVersion: mockReadProjectVersion,
+  stripTagPrefix: mockStripTagPrefix,
   tagExists: mockTagExists,
 }));
 
-import { compareVersions, determineBumpType, generateChangelog, getInputs, run, updateVersionFile } from "./logic.js";
+import {
+  commitScope,
+  compareVersions,
+  determineBumpType,
+  generateChangelog,
+  getInputs,
+  run,
+  updateVersionFile,
+} from "./logic.js";
 
 // ── getInputs ──────────────────────────────────────────────────────
 
@@ -119,6 +133,27 @@ describe("getInputs", () => {
     expect(inputs.pushChanges).toBe(true);
     expect(inputs.githubToken).toBe("ghs_token123");
     expect(inputs.dryRun).toBe(false);
+    expect(inputs.tagPrefix).toBe("v");
+  });
+
+  it("parses a custom tag_prefix", () => {
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === "github_token") return "ghs_token123";
+      if (name === "tag_prefix") return "review-access-v";
+      return "";
+    });
+
+    expect(getInputs().tagPrefix).toBe("review-access-v");
+  });
+
+  it("rejects a tag_prefix git cannot use in a tag", () => {
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === "github_token") return "ghs_token123";
+      if (name === "tag_prefix") return "bad prefix";
+      return "";
+    });
+
+    expect(() => getInputs()).toThrow('Invalid tag_prefix "bad prefix"');
   });
 
   it("throws when github_token is missing and dry_run is false", () => {
@@ -1499,6 +1534,227 @@ describe("versioning run", () => {
         expect.objectContaining({ cwd: expect.any(String) }),
       );
       expect(mockExecExec).toHaveBeenCalledWith("git", ["commit", "-m", "chore(release): v0.3.0-beta.2"]);
+    });
+  });
+
+  describe("tag_prefix", () => {
+    function mockNewRelease() {
+      const mockCreateRelease = vi.fn(async () => ({
+        data: { html_url: "https://github.com/krashidbuilt/ctrl/releases/x" },
+      }));
+      mockGetOctokit.mockReturnValue({
+        rest: {
+          repos: {
+            getReleaseByTag: vi.fn(async () => {
+              const err = new Error("Not Found") as Error & { status: number };
+              err.status = 404;
+              throw err;
+            }),
+            createRelease: mockCreateRelease,
+          },
+        },
+      });
+      return mockCreateRelease;
+    }
+
+    it("reads tags with the default v prefix when tag_prefix is unset", async () => {
+      mockNewRelease();
+
+      await run();
+
+      expect(mockGetLatestGitTag).toHaveBeenCalledWith(true, "v");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "v1.0.1");
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["commit", "-m", "chore(release): v1.0.1"]);
+    });
+
+    it("reads and writes only tags with a custom prefix for a stable release", async () => {
+      setupInputs({ tag_prefix: "review-access-v" });
+      mockGetLatestGitTag.mockResolvedValue("review-access-v2.3.0");
+      mockBumpVersion.mockReturnValue("2.3.1");
+      const mockCreateRelease = mockNewRelease();
+
+      await run();
+
+      expect(mockGetLatestGitTag).toHaveBeenCalledWith(true, "review-access-v");
+      expect(mockBumpVersion).toHaveBeenCalledWith("2.3.0", "patch");
+      expect(mockSetOutput).toHaveBeenCalledWith("previous_version", "2.3.0");
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "2.3.1");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "review-access-v2.3.1");
+      expect(mockTagExists).toHaveBeenCalledWith("review-access-v2.3.1");
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["commit", "-m", "chore(release): review-access-v2.3.1"]);
+      expect(mockExecExec).toHaveBeenCalledWith("git", [
+        "tag",
+        "-a",
+        "review-access-v2.3.1",
+        "-m",
+        "Release review-access-v2.3.1",
+      ]);
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["push", "origin", "review-access-v2.3.1"]);
+      expect(mockCreateRelease).toHaveBeenCalledWith(
+        expect.objectContaining({ tag_name: "review-access-v2.3.1", name: "review-access-v2.3.1" }),
+      );
+    });
+
+    it("finds and writes prerelease tags with a custom prefix", async () => {
+      setupInputs({ tag_prefix: "review-access-v", release_prerelease: "true" });
+      mockGetLatestGitTag.mockResolvedValue("review-access-v1.0.0");
+      mockBumpVersion.mockReturnValue("1.0.1");
+      mockGetLatestPrereleaseTagForVersion.mockResolvedValue("review-access-v1.0.1-alpha.3");
+      const mockCreateRelease = mockNewRelease();
+
+      await run();
+
+      expect(mockGetLatestPrereleaseTagForVersion).toHaveBeenCalledWith("1.0.1", "alpha", "review-access-v");
+      expect(mockParseVersion).toHaveBeenCalledWith("review-access-v1.0.1-alpha.3", "review-access-v");
+      expect(mockTagExists).toHaveBeenCalledWith("review-access-v1.0.1-alpha.4");
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "1.0.1-alpha.4");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "review-access-v1.0.1-alpha.4");
+      expect(mockCreateRelease).toHaveBeenCalledWith(
+        expect.objectContaining({ tag_name: "review-access-v1.0.1-alpha.4", prerelease: true }),
+      );
+    });
+
+    it("names the last tried tag with the prefix when no prerelease version is free", async () => {
+      setupInputs({ tag_prefix: "review-access-v", release_prerelease: "true" });
+      mockGetLatestGitTag.mockResolvedValue("review-access-v1.0.0");
+      mockBumpVersion.mockReturnValue("1.0.1");
+      mockTagExists.mockResolvedValue(true);
+
+      await run();
+
+      expect(mockSetFailed).toHaveBeenCalledWith(
+        "Could not find available version after 10 attempts. Last tried: review-access-v1.0.1-alpha.10",
+      );
+    });
+
+    it("writes promoted tags with a custom prefix", async () => {
+      setupInputs({ tag_prefix: "review-access-v", promote_from: "alpha", prerelease_identifier: "beta" });
+      mockReadProjectVersion.mockReturnValue("0.3.0-alpha.2");
+      const mockCreateRelease = mockNewRelease();
+
+      await run();
+
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "review-access-v0.3.0-beta.2");
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["commit", "-m", "chore(release): review-access-v0.3.0-beta.2"]);
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["push", "origin", "review-access-v0.3.0-beta.2"]);
+      expect(mockCreateRelease).toHaveBeenCalledWith(
+        expect.objectContaining({ tag_name: "review-access-v0.3.0-beta.2" }),
+      );
+    });
+  });
+
+  describe("commit range scoped to working_directory (non-default tag_prefix)", () => {
+    /** Simulates `git log` where only commits touching lib/review-access are inside the directory. */
+    function mockRepoLog() {
+      mockExecExec.mockImplementation(
+        async (
+          _cmd: string,
+          args?: string[],
+          opts?: { listeners?: { stdout?: (data: Buffer) => void }; cwd?: string },
+        ) => {
+          if (args?.[0] === "log") {
+            const scoped = args.includes("--") && opts?.cwd?.endsWith("lib/review-access");
+            const out = scoped
+              ? "aaa1111 fix: inside review-access\n"
+              : "bbb2222 feat!: unrelated breaking change\naaa1111 fix: inside review-access\n";
+            opts?.listeners?.stdout?.(Buffer.from(out));
+          }
+          return 0;
+        },
+      );
+      mockDetermineBumpTypeFromCommits.mockImplementation((commits: string[]) =>
+        commits.some((c) => c.includes("!:")) ? "major" : commits.length ? "patch" : "none",
+      );
+      mockBumpVersion.mockImplementation((_v: string, bump: string) => (bump === "major" ? "2.0.0" : "1.0.1"));
+    }
+
+    it("ignores an unrelated feat!: outside the directory and bumps for a fix: inside", async () => {
+      setupInputs({ tag_prefix: "review-access-v", working_directory: "lib/review-access", dry_run: "true" });
+      mockCommonWorkingDirectory.mockReturnValue("lib/review-access");
+      mockGetLatestGitTag.mockResolvedValue("review-access-v1.0.0");
+      mockRepoLog();
+
+      await run();
+
+      expect(mockExecExec).toHaveBeenCalledWith(
+        "git",
+        ["log", "review-access-v1.0.0..HEAD", "--oneline", "--", "."],
+        expect.objectContaining({ cwd: expect.stringMatching(/lib\/review-access$/) }),
+      );
+      expect(mockExecExec).toHaveBeenCalledWith(
+        "git",
+        ["log", "review-access-v1.0.0..HEAD", "--pretty=format:- %s (%h)", "--", "."],
+        expect.objectContaining({ cwd: expect.stringMatching(/lib\/review-access$/) }),
+      );
+      expect(mockDetermineBumpTypeFromCommits).toHaveBeenCalledWith(["aaa1111 fix: inside review-access"]);
+      expect(mockSetOutput).toHaveBeenCalledWith("bump_type", "patch");
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "1.0.1");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "review-access-v1.0.1");
+    });
+
+    it("keeps the whole-repo range with the default prefix", async () => {
+      setupInputs({ working_directory: "lib/review-access", dry_run: "true" });
+      mockCommonWorkingDirectory.mockReturnValue("lib/review-access");
+      mockGetLatestGitTag.mockResolvedValue("v1.0.0");
+      mockRepoLog();
+
+      await run();
+
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["log", "v1.0.0..HEAD", "--oneline"], {
+        listeners: expect.any(Object),
+        silent: true,
+      });
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["log", "v1.0.0..HEAD", "--pretty=format:- %s (%h)"], {
+        listeners: expect.any(Object),
+        silent: true,
+      });
+      expect(mockSetOutput).toHaveBeenCalledWith("bump_type", "major");
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "2.0.0");
+    });
+
+    it("scopes the promotion changelog too", async () => {
+      setupInputs({
+        tag_prefix: "review-access-v",
+        working_directory: "lib/review-access",
+        promote_from: "alpha",
+        prerelease_identifier: "beta",
+        dry_run: "true",
+      });
+      mockCommonWorkingDirectory.mockReturnValue("lib/review-access");
+      mockReadProjectVersion.mockReturnValue("0.3.0-alpha.2");
+      mockGetLatestGitTag.mockResolvedValue("review-access-v0.2.0");
+      mockRepoLog();
+
+      await run();
+
+      expect(mockExecExec).toHaveBeenCalledWith(
+        "git",
+        ["log", "review-access-v0.2.0..HEAD", "--pretty=format:- %s (%h)", "--", "."],
+        expect.objectContaining({ cwd: expect.stringMatching(/lib\/review-access$/) }),
+      );
+    });
+
+    it("commitScope returns the directory only for a non-default prefix", () => {
+      expect(commitScope({ tagPrefix: "v" }, "/repo/lib/x")).toBeUndefined();
+      expect(commitScope({ tagPrefix: "x-v" }, "/repo/lib/x")).toBe("/repo/lib/x");
+    });
+
+    it("scopes the bootstrap range (no tag) to the directory", async () => {
+      mockRepoLog();
+
+      await determineBumpType(null, "/repo/lib/review-access");
+      await generateChangelog(null, "/repo/lib/review-access");
+
+      expect(mockExecExec).toHaveBeenCalledWith(
+        "git",
+        ["log", "--oneline", "-20", "--", "."],
+        expect.objectContaining({ cwd: "/repo/lib/review-access" }),
+      );
+      expect(mockExecExec).toHaveBeenCalledWith(
+        "git",
+        ["log", "--pretty=format:- %s (%h)", "-20", "--", "."],
+        expect.objectContaining({ cwd: "/repo/lib/review-access" }),
+      );
     });
   });
 

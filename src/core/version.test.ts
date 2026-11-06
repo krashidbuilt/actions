@@ -43,6 +43,7 @@ import {
   parseVersion,
   readPackageVersion,
   readProjectVersion,
+  stripTagPrefix,
   tagExists,
 } from "./version.js";
 
@@ -71,6 +72,42 @@ describe("parseVersion", () => {
     expect(() => parseVersion("invalid")).toThrow("Invalid version format");
     expect(() => parseVersion("1.2")).toThrow("Invalid version format");
     expect(() => parseVersion("")).toThrow("Invalid version format");
+  });
+});
+
+describe("parseVersion with a custom tag prefix", () => {
+  it("strips the custom prefix", () => {
+    expect(parseVersion("review-access-v1.2.3", "review-access-v")).toEqual({
+      major: 1,
+      minor: 2,
+      patch: 3,
+      prerelease: undefined,
+    });
+  });
+
+  it("parses a bare version", () => {
+    expect(parseVersion("1.2.3-alpha.4", "review-access-v")).toEqual({
+      major: 1,
+      minor: 2,
+      patch: 3,
+      prerelease: "alpha.4",
+    });
+  });
+
+  it("does not strip a plain v when the prefix is custom", () => {
+    expect(() => parseVersion("v1.2.3", "review-access-v")).toThrow("Invalid version format");
+  });
+});
+
+describe("stripTagPrefix", () => {
+  it("strips a leading v by default", () => {
+    expect(stripTagPrefix("v1.2.3")).toBe("1.2.3");
+    expect(stripTagPrefix("1.2.3")).toBe("1.2.3");
+  });
+
+  it("strips a custom prefix and leaves other strings alone", () => {
+    expect(stripTagPrefix("review-access-v1.2.3", "review-access-v")).toBe("1.2.3");
+    expect(stripTagPrefix("v1.2.3", "review-access-v")).toBe("v1.2.3");
   });
 });
 
@@ -298,6 +335,33 @@ describe("getLatestGitTag", () => {
   });
 });
 
+describe("getLatestGitTag with a custom tag prefix", () => {
+  it("ignores v-prefixed and bare tags", async () => {
+    mockGitTagOutput("v1.2.3\n1.2.3\nreview-access-v1.0.0\nreview-access-v0.9.0\n");
+    expect(await getLatestGitTag(true, "review-access-v")).toBe("review-access-v1.0.0");
+  });
+
+  it("returns prerelease tags with the prefix when stableOnly is false", async () => {
+    mockGitTagOutput("v2.0.0\nreview-access-v1.1.0-alpha.2\nreview-access-v1.0.0\n");
+    expect(await getLatestGitTag(false, "review-access-v")).toBe("review-access-v1.1.0-alpha.2");
+  });
+
+  it("returns null when only other prefixes exist", async () => {
+    mockGitTagOutput("v1.2.3\nother-v1.0.0\n");
+    expect(await getLatestGitTag(true, "review-access-v")).toBeNull();
+  });
+
+  it("treats regex characters in the prefix literally", async () => {
+    mockGitTagOutput("pkgXv2.0.0\npkg.v1.0.0\n");
+    expect(await getLatestGitTag(true, "pkg.v")).toBe("pkg.v1.0.0");
+  });
+
+  it("passes the default prefix through unchanged", async () => {
+    mockGitTagOutput("review-access-v9.0.0\nv1.2.3\n");
+    expect(await getLatestGitTag(true, "v")).toBe("v1.2.3");
+  });
+});
+
 describe("getLatestPrereleaseTagForVersion", () => {
   it("finds latest alpha prerelease tag for a base version", async () => {
     mockGitTagOutput("v1.2.3-alpha.5\nv1.2.3-alpha.3\nv1.2.3-alpha.1\n");
@@ -339,6 +403,25 @@ describe("getLatestPrereleaseTagForVersion", () => {
     mockExec.mockRejectedValueOnce(new Error("git not found"));
     const result = await getLatestPrereleaseTagForVersion("1.0.0");
     expect(result).toBeNull();
+  });
+});
+
+describe("getLatestPrereleaseTagForVersion with a custom tag prefix", () => {
+  it("only considers tags with the prefix", async () => {
+    mockGitTagOutput("v1.0.0-alpha.9\nreview-access-v1.0.0-alpha.2\nreview-access-v1.0.0-alpha.1\n");
+    const result = await getLatestPrereleaseTagForVersion("1.0.0", "alpha", "review-access-v");
+    expect(result).toBe("review-access-v1.0.0-alpha.2");
+  });
+
+  it("normalizes a base version that carries the prefix", async () => {
+    mockGitTagOutput("review-access-v1.0.0-beta.1\n");
+    const result = await getLatestPrereleaseTagForVersion("review-access-v1.0.0", "beta", "review-access-v");
+    expect(result).toBe("review-access-v1.0.0-beta.1");
+  });
+
+  it("returns null when only v-prefixed prereleases exist", async () => {
+    mockGitTagOutput("v1.0.0-alpha.3\n1.0.0-alpha.2\n");
+    expect(await getLatestPrereleaseTagForVersion("1.0.0", "alpha", "review-access-v")).toBeNull();
   });
 });
 
@@ -485,5 +568,18 @@ describe("getVersionInfo", () => {
 
     const result = await getVersionInfo();
     expect(result.current).toBe("1.0.0");
+  });
+
+  it("uses a custom tag prefix for the previous and new tag", async () => {
+    mockReadPackageJson.mockReturnValue({ version: "1.1.0" });
+    mockGitTagOutput("v3.0.0\nreview-access-v1.0.0\n");
+
+    const result = await getVersionInfo(".", "review-access-v");
+    expect(result).toEqual({
+      current: "1.1.0",
+      previous: "1.0.0",
+      tag: "review-access-v1.1.0",
+      isPrerelease: false,
+    });
   });
 });
