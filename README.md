@@ -280,9 +280,11 @@ publish invalidates `/index.json`, `/index.html`, `/` and `/<project>/*`.
 ### reusable-cdk-deploy.yml
 
 Runs `cdk diff` or `cdk deploy` for one CDK app in the caller repo (an infra repo, e.g.
-krashidbuilt/infrastructure's `bun bin/platform.ts`). A PR runs `diff`: the output goes to the run
-log and to a PR comment inside `<details>`, and stacks that differ never fail the job (no `--fail`);
-a synth or auth error still does. A merge runs `deploy`: `--all` (or `stacks`),
+krashidbuilt/infrastructure's `bun bin/platform.ts`). A PR runs `diff` with `--method=template`, a
+template-only diff: no change set, no template upload, so a PR writes nothing to the account;
+replacement detection comes from the resource spec. The output goes to the run log and to a PR
+comment inside `<details>`, and stacks that differ never fail the job (no `--fail`); a synth or
+auth error still does. A merge runs `deploy`: `--all` (or `stacks`),
 `--require-approval never`, `--concurrency <n>`.
 
 ```yaml

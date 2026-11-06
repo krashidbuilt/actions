@@ -202,7 +202,9 @@ jobs:
           if [ "$MODE" = diff ]; then
             # cdk diff writes to stderr. No --fail: differences are the point, not an error.
             # pipefail keeps a real failure (synth, auth) failing the step.
-            bunx "aws-cdk@${CLI_VERSION}" diff --no-color --app "$APP" \
+            # --method=template: diff from templates only. The default (auto) creates and deletes a
+            # change set per stack and uploads the template, and a PR diff must write nothing.
+            bunx "aws-cdk@${CLI_VERSION}" diff --no-color --method=template --app "$APP" \
               "${stack_args[@]}" "${context_args[@]}" 2>&1 | tee "$DIFF_FILE"
           else
             # No --no-rollback here (backend deploys use it): a failed infra stack
