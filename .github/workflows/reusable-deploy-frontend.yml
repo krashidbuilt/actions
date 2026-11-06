@@ -84,12 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Static deployer keys. The configure-aws step reads them from here and
-    # re-exports them for later steps: unchanged when role_arn is empty, or as
-    # the assumed role's short-lived session when role_arn is set.
+    # No AWS keys at job level: they go to the Configure AWS step only.
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION || inputs.aws_region }}
     steps:
       - uses: actions/checkout@v4
@@ -137,8 +133,14 @@ jobs:
           chmod +x /tmp/awscli/aws/install /tmp/awscli/aws/dist/aws /tmp/awscli/aws/dist/aws_completer 2>/dev/null || true
           if [ "$(id -u)" = 0 ]; then /tmp/awscli/aws/install --update; else sudo /tmp/awscli/aws/install --update; fi
           aws --version
+      # The keys are handed to the configure-aws step only (step env, not job env),
+      # so later steps see exactly what configure-aws exported to GITHUB_ENV: the
+      # assumed-role session when role_arn is set, the static keys unchanged otherwise.
       - name: Configure AWS
         uses: krashidbuilt/actions/utilities/configure-aws@v1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         with:
           environment: ${{ steps.env.outputs.environment }}
           role_arn: ${{ inputs.role_arn }}
