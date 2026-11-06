@@ -56,6 +56,8 @@ on push and pull_request. Same checks, no publish, no secret.
 - **Seed a tag matching `package.json`** (`git tag v0.1.0 && git push origin v0.1.0`).
   With no tags the versioning action reads the last 20 commits, and a single
   `!:` or `BREAKING CHANGE` in that window makes the first release `1.0.0`.
+  With a `tag_prefix`, the seed tag is `<prefix><version>`
+  (`git tag review-access-v0.1.0`): the action ignores tags without its prefix.
 - **Check `has_actions`.** A repo can have Actions disabled, in which case the
   workflow sits on `main` and nothing ever runs, with no error anywhere —
   imessagecli was in that state. `curl -H "Authorization: token $T"
@@ -172,7 +174,23 @@ jobs:
       working_directory: packages/my-lib
 ```
 
-npm dist-tag is auto-mapped: develop → `alpha`, staging → `beta`, production → `latest`.
+npm dist-tag is auto-mapped unless `dist_tag` is set: develop → `alpha`, staging → `beta`, production → `latest`.
+
+- **`tag_prefix`** (default `v`) is the prefix of the version tags, passed to both
+  versioning calls. They read and write only `<prefix>X.Y.Z` tags, so a second
+  package in the same repo gets its own release line instead of racing the repo's
+  `vX.Y.Z` tags.
+- **`dist_tag`** (default empty = the mapping above) sets the npm dist-tag outright.
+  The mapping sends `develop` to `alpha` whatever `production_branch` says, so a
+  package released from `develop` sets `dist_tag: latest`.
+
+```yaml
+    with:
+      working_directory: packages/review-access
+      production_branch: develop
+      tag_prefix: review-access-v   # tags review-access-v1.2.3, not v1.2.3
+      dist_tag: latest
+```
 
 ### reusable-3d-publish.yml
 
@@ -315,7 +333,11 @@ bun run test               # Vitest
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     prerelease_identifier: alpha  # or beta
+    tag_prefix: v                 # default; tags are <prefix><version>
 ```
+
+Set `tag_prefix` (e.g. `my-package-v`) when one repo versions more than one package:
+the action then reads and writes only tags with that prefix.
 
 ### TypeScript
 

@@ -33,10 +33,36 @@ export function readProjectVersion(workingDirectory = "."): string {
   throw new Error(`No package.json found at ${resolvedDir}`);
 }
 
+/** The tag prefix every version tag has unless a caller asks for another one. */
+export const DEFAULT_TAG_PREFIX = "v";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * Get the latest git tag that matches semver format
+ * Regex source matching a tag's prefix. The default prefix stays optional, so bare
+ * `X.Y.Z` tags keep matching as they always have; any other prefix is required.
  */
-export async function getLatestGitTag(stableOnly = false): Promise<string | null> {
+function tagPrefixPattern(tagPrefix: string): string {
+  return tagPrefix === DEFAULT_TAG_PREFIX ? "v?" : escapeRegExp(tagPrefix);
+}
+
+/**
+ * Remove the tag prefix from a tag or version string (`v1.2.3` -> `1.2.3`, or
+ * `review-access-v1.2.3` -> `1.2.3` with that prefix). Strings without it are returned unchanged.
+ */
+export function stripTagPrefix(value: string, tagPrefix = DEFAULT_TAG_PREFIX): string {
+  if (tagPrefix === DEFAULT_TAG_PREFIX) {
+    return value.replace(/^v/, "");
+  }
+  return value.startsWith(tagPrefix) ? value.slice(tagPrefix.length) : value;
+}
+
+/**
+ * Get the latest git tag that matches semver format, considering only tags with `tagPrefix`
+ */
+export async function getLatestGitTag(stableOnly = false, tagPrefix = DEFAULT_TAG_PREFIX): Promise<string | null> {
   let output = "";
 
   try {
@@ -50,8 +76,9 @@ export async function getLatestGitTag(stableOnly = false): Promise<string | null
     });
 
     const tags = output.trim().split("\n");
-    const semverRegex = /^v?\d+\.\d+\.\d+(-[a-zA-Z0-9]+(\.\d+)?)?$/;
-    const stableSemverRegex = /^v?\d+\.\d+\.\d+$/;
+    const prefix = tagPrefixPattern(tagPrefix);
+    const semverRegex = new RegExp(`^${prefix}\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9]+(\\.\\d+)?)?$`);
+    const stableSemverRegex = new RegExp(`^${prefix}\\d+\\.\\d+\\.\\d+$`);
 
     const regex = stableOnly ? stableSemverRegex : semverRegex;
     const semverTag = tags.find((tag) => regex.test(tag.trim()));
@@ -71,11 +98,12 @@ export async function getLatestGitTag(stableOnly = false): Promise<string | null
 }
 
 /**
- * Get the latest prerelease tag for a specific base version
+ * Get the latest prerelease tag for a specific base version, considering only tags with `tagPrefix`
  */
 export async function getLatestPrereleaseTagForVersion(
   baseVersion: string,
   prereleaseIdentifier = "alpha",
+  tagPrefix = DEFAULT_TAG_PREFIX,
 ): Promise<string | null> {
   let output = "";
 
@@ -90,8 +118,10 @@ export async function getLatestPrereleaseTagForVersion(
     });
 
     const tags = output.trim().split("\n");
-    const baseNormalized = baseVersion.replace(/^v/, "");
-    const tagRegex = new RegExp(`^v?${baseNormalized.replace(/\./g, "\\.")}-${prereleaseIdentifier}\\.(\\d+)$`);
+    const baseNormalized = stripTagPrefix(baseVersion, tagPrefix);
+    const tagRegex = new RegExp(
+      `^${tagPrefixPattern(tagPrefix)}${baseNormalized.replace(/\./g, "\\.")}-${prereleaseIdentifier}\\.(\\d+)$`,
+    );
 
     const matchingTag = tags.find((tag) => tagRegex.test(tag.trim()));
 
@@ -136,13 +166,16 @@ export async function tagExists(tag: string): Promise<boolean> {
   }
 }
 
-export function parseVersion(versionString: string): {
+export function parseVersion(
+  versionString: string,
+  tagPrefix = DEFAULT_TAG_PREFIX,
+): {
   major: number;
   minor: number;
   patch: number;
   prerelease?: string;
 } {
-  const normalized = versionString.replace(/^v/, "");
+  const normalized = stripTagPrefix(versionString, tagPrefix);
 
   const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/);
   if (!match) {
@@ -198,15 +231,15 @@ export function bumpVersion(
   }
 }
 
-export async function getVersionInfo(workingDirectory = "."): Promise<VersionInfo> {
+export async function getVersionInfo(workingDirectory = ".", tagPrefix = DEFAULT_TAG_PREFIX): Promise<VersionInfo> {
   const current = readPackageVersion(workingDirectory);
-  const latestTag = await getLatestGitTag();
+  const latestTag = await getLatestGitTag(false, tagPrefix);
   const parsed = parseVersion(current);
 
   const info: VersionInfo = {
     current,
-    previous: latestTag ? latestTag.replace(/^v/, "") : undefined,
-    tag: `v${current}`,
+    previous: latestTag ? stripTagPrefix(latestTag, tagPrefix) : undefined,
+    tag: `${tagPrefix}${current}`,
     isPrerelease: !!parsed.prerelease,
   };
 

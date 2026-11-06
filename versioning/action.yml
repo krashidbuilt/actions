@@ -43,6 +43,9 @@ inputs:
   dry_run:
     description: "Dry run mode (do not actually create tags/releases)"
     default: "false"
+  tag_prefix:
+    description: "Prefix of the version tags this action reads and writes (tag = <prefix><version>). Use a distinct prefix (e.g. 'my-package-v') when a repo versions more than one package"
+    default: "v"
   promote_from:
     description: "Promote version by replacing this prerelease identifier (e.g. 'alpha' promotes alpha→target channel)"
     default: ""
