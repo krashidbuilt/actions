@@ -1,12 +1,19 @@
 name: Reusable Deploy Backend (CDK)
 
-# Deploys an app repo's backend stack via CDK, using the caller's
-# gitea-actions deployer-user static keys directly. That user holds a
-# `CdkDeployAccess` policy (cloudformation:*, iam role-management + PassRole,
-# sts:AssumeRole) and the account's `cdk-*` bootstrap roles trust the account
-# root — so the user can drive a full `cdk deploy` with no role assumption and
-# no per-app deploy role. Pass app-specific CDK context (e.g. certificateArn)
-# via `cdk_context`; `channel=<env>` is always injected.
+# Deploys an app repo's backend stack via CDK. Two auth paths, both starting
+# from the caller's gitea-actions deployer-user static keys:
+#   - role_arn empty (default): the static keys are used directly, as before.
+#     That user holds a `CdkDeployAccess` policy (cloudformation:*, iam
+#     role-management + PassRole, sts:AssumeRole) and the account's `cdk-*`
+#     bootstrap roles trust the account root, so it can drive a full
+#     `cdk deploy` with no role assumption.
+#   - role_arn set (e.g. the account's `deploy-app` role): utilities/configure-aws
+#     signs an STS AssumeRole with the static key and exports the role's
+#     short-lived session; the deploy runs as that role.
+# The keys are handed to the configure-aws step only (step env, not job env),
+# so later steps see exactly what configure-aws exported to GITHUB_ENV.
+# Pass app-specific CDK context (e.g. certificateArn) via `cdk_context`;
+# `channel=<env>` is always injected.
 on:
   workflow_call:
     inputs:
@@ -44,6 +51,10 @@ on:
       aws_region:
         type: string
         default: "us-east-1"
+      role_arn:
+        description: "Full IAM role ARN to assume with the static key (e.g. arn:aws:iam::<account>:role/deploy-app). Empty = deploy with the static key directly, as before."
+        type: string
+        default: ""
       cdk_version:
         description: "aws-cdk CLI version to run via bunx"
         type: string
@@ -65,9 +76,8 @@ jobs:
   deploy:
     name: Deploy Backend
     runs-on: ubuntu-latest
+    # No AWS keys at job level: they go to the Configure AWS step only.
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION || inputs.aws_region }}
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +100,46 @@ jobs:
         uses: krashidbuilt/actions/utilities/detect-environment@v1
         with:
           environment: ${{ inputs.environment }}
+      # deploy/frontend shells out to `aws`. Runner hosts cache different builds of
+      # runner-images:ubuntu-latest and newer ones dropped the AWS CLI (2026-10-14: the
+      # same deploy passed on `nas` and failed on another runner with "Unable to locate
+      # executable file: aws"). Install it when missing.
+      # (Here the CDK deploy runs via bunx and needs no AWS CLI; the Who am I step does.)
+      - name: Ensure AWS CLI
+        shell: bash
+        run: |
+          if command -v aws >/dev/null 2>&1; then aws --version; exit 0; fi
+          arch=$(uname -m)
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp/awscli 2>/dev/null || python3 -m zipfile -e /tmp/awscliv2.zip /tmp/awscli
+          chmod +x /tmp/awscli/aws/install /tmp/awscli/aws/dist/aws /tmp/awscli/aws/dist/aws_completer 2>/dev/null || true
+          if [ "$(id -u)" = 0 ]; then /tmp/awscli/aws/install --update; else sudo /tmp/awscli/aws/install --update; fi
+          aws --version
+      # The keys are handed to the configure-aws step only (step env, not job env),
+      # so later steps see exactly what configure-aws exported to GITHUB_ENV: the
+      # assumed-role session when role_arn is set, the static keys unchanged otherwise.
+      - name: Configure AWS
+        uses: krashidbuilt/actions/utilities/configure-aws@v1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        with:
+          environment: ${{ steps.env.outputs.environment }}
+          role_arn: ${{ inputs.role_arn }}
+          aws_region: ${{ vars.AWS_REGION || inputs.aws_region }}
+      # Logs the identity later steps deploy as: the deployer user, or the
+      # assumed-role session when role_arn is set (fails if the role didn't take).
+      - name: Who am I
+        shell: bash
+        env:
+          ROLE_ARN: ${{ inputs.role_arn }}
+        run: |
+          arn=$(aws sts get-caller-identity --query Arn --output text)
+          echo "Deploying as: $arn"
+          if [ -n "$ROLE_ARN" ] && [[ "$arn" != *":assumed-role/"* ]]; then
+            echo "::error::role_arn is set ($ROLE_ARN) but the active identity is not an assumed-role session"
+            exit 1
+          fi
       # Slack deploy card: posted as PENDING here, updated in place by the
       # `if: always()` step at the end of the job. Without SLACK_BOT_TOKEN both
       # steps are no-ops, and a Slack failure only warns (never fails the deploy).
@@ -114,11 +164,13 @@ jobs:
         run: bun run ${{ inputs.build_command }}
       - name: CDK deploy
         working-directory: ${{ inputs.infra_directory }}
+        # No env var here may start with CDK_: the aws-cdk CLI parses yargs with
+        # `.env('CDK')`, so CDK_CONTEXT would become --context and CDK_VERSION --version.
         env:
           ENVIRONMENT: ${{ steps.env.outputs.environment }}
           STACK_TEMPLATE: ${{ inputs.stack_name }}
-          CDK_CONTEXT: ${{ inputs.cdk_context }}
-          CDK_VERSION: ${{ inputs.cdk_version }}
+          CONTEXT_LINES: ${{ inputs.cdk_context }}
+          CLI_VERSION: ${{ inputs.cdk_version }}
         run: |
           set -euo pipefail
           env="$ENVIRONMENT"
@@ -131,10 +183,10 @@ jobs:
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             context_args+=( --context "$line" )
-          done <<< "$CDK_CONTEXT"
+          done <<< "$CONTEXT_LINES"
 
           echo "Deploying stack '$stack' (env=$env) with: ${context_args[*]}"
-          bunx "aws-cdk@${CDK_VERSION}" deploy "$stack" \
+          bunx "aws-cdk@${CLI_VERSION}" deploy "$stack" \
             "${context_args[@]}" \
             --require-approval never \
             --no-rollback
