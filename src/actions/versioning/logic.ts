@@ -107,21 +107,44 @@ export function compareVersions(v1: string, v2: string): number {
 }
 
 /**
- * Get commits since last tag and determine bump type.
+ * Run a `git log` and return its stdout. With `scopeDir`, git runs in that directory
+ * with a `-- .` pathspec, so only commits touching it are listed.
  */
-export async function determineBumpType(latestTag: string | null): Promise<VersionBumpType | "none"> {
+async function readGitLog(args: string[], scopeDir?: string): Promise<string> {
   let commitLog = "";
 
-  const args = latestTag ? ["log", `${latestTag}..HEAD`, "--oneline"] : ["log", "--oneline", "-20"];
-
-  await exec.exec("git", args, {
+  await exec.exec("git", scopeDir ? [...args, "--", "."] : args, {
     listeners: {
       stdout: (data) => {
         commitLog += data.toString();
       },
     },
     silent: true,
+    ...(scopeDir ? { cwd: scopeDir } : {}),
   });
+
+  return commitLog;
+}
+
+/**
+ * The directory the commit range is scoped to: the working directory when the tag
+ * prefix is non-default (one of several packages in a repo), otherwise none, so
+ * `v`-tagged repos keep counting every commit.
+ */
+export function commitScope(inputs: Pick<VersioningInputs, "tagPrefix">, workingDir: string): string | undefined {
+  return inputs.tagPrefix === DEFAULT_TAG_PREFIX ? undefined : workingDir;
+}
+
+/**
+ * Get commits since last tag and determine bump type.
+ * With `scopeDir`, only commits touching that directory count.
+ */
+export async function determineBumpType(
+  latestTag: string | null,
+  scopeDir?: string,
+): Promise<VersionBumpType | "none"> {
+  const args = latestTag ? ["log", `${latestTag}..HEAD`, "--oneline"] : ["log", "--oneline", "-20"];
+  const commitLog = await readGitLog(args, scopeDir);
 
   const commits = commitLog
     .trim()
@@ -132,23 +155,14 @@ export async function determineBumpType(latestTag: string | null): Promise<Versi
 }
 
 /**
- * Generate changelog from commits
+ * Generate changelog from commits.
+ * With `scopeDir`, only commits touching that directory are listed.
  */
-export async function generateChangelog(latestTag: string | null): Promise<string> {
-  let commitLog = "";
-
+export async function generateChangelog(latestTag: string | null, scopeDir?: string): Promise<string> {
   const args = latestTag
     ? ["log", `${latestTag}..HEAD`, "--pretty=format:- %s (%h)"]
     : ["log", "--pretty=format:- %s (%h)", "-20"];
-
-  await exec.exec("git", args, {
-    listeners: {
-      stdout: (data) => {
-        commitLog += data.toString();
-      },
-    },
-    silent: true,
-  });
+  const commitLog = await readGitLog(args, scopeDir);
 
   return commitLog.trim() || "No changes recorded.";
 }
@@ -220,7 +234,7 @@ export async function run(): Promise<void> {
 
       let changelog = "";
       if (inputs.generateChangelog) {
-        changelog = await generateChangelog(latestStableTag);
+        changelog = await generateChangelog(latestStableTag, commitScope(inputs, workingDir));
         logger.info("Generated changelog", { referenceTag: latestStableTag });
       }
 
@@ -319,7 +333,7 @@ export async function run(): Promise<void> {
     // Determine bump type once (used by both prerelease and stable paths)
     let bumpType: VersionBumpType | "none";
     if (inputs.bumpType === "auto") {
-      bumpType = await determineBumpType(latestStableTag);
+      bumpType = await determineBumpType(latestStableTag, commitScope(inputs, workingDir));
       logger.info(`Auto-detected bump type: ${bumpType}`, { referenceTag: latestStableTag });
     } else {
       bumpType = inputs.bumpType;
@@ -402,7 +416,7 @@ export async function run(): Promise<void> {
         ? (await getLatestPrereleaseTagForVersion(changelogBase!, inputs.prereleaseIdentifier, inputs.tagPrefix)) ||
           latestStableTag
         : latestStableTag;
-      changelog = await generateChangelog(changelogRef);
+      changelog = await generateChangelog(changelogRef, commitScope(inputs, workingDir));
       logger.info("Generated changelog", { referenceTag: changelogRef });
     }
 

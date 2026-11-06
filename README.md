@@ -404,7 +404,7 @@ bun run test               # Vitest
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     prerelease_identifier: alpha  # or beta
-    tag_prefix: v                 # default; tags are <prefix><version>
+    tag_prefix: v                 # default; tags are <prefix><version>. With any other prefix, only commits touching working_directory count toward the bump and the changelog
 ```
 
 Set `tag_prefix` (e.g. `my-package-v`) when one repo versions more than one package:
