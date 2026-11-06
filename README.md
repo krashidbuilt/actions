@@ -103,7 +103,23 @@ jobs:
       app_name: ctrl
 ```
 
-Permissions (`contents: write`) are declared inside the reusable workflow — callers don't need them. AWS auth uses long-lived access keys passed in via `secrets.AWS_ACCESS_KEY_ID` / `secrets.AWS_SECRET_ACCESS_KEY` (set at the org level). Environment and prerelease identifier are auto-detected from the branch.
+Permissions (`contents: write`) are declared inside the reusable workflow — callers don't need them. AWS auth starts from the deployer keys in `secrets.AWS_ACCESS_KEY_ID` / `secrets.AWS_SECRET_ACCESS_KEY` (set at the org level) and goes through `utilities/configure-aws`. With `role_arn` empty (the default) the deploy uses those keys directly, as before. Set `role_arn` to a full role ARN (e.g. `arn:aws:iam::<account>:role/deploy-app`) and the static key signs an STS AssumeRole, and every later step runs as that role's short-lived session. A `Who am I` step logs the active identity (`Deploying as: arn:aws:sts::<account>:assumed-role/deploy-app/gitea-actions-<env>`), and fails the job if `role_arn` is set but the identity is not an assumed-role session. Environment and prerelease identifier are auto-detected from the branch.
+
+### reusable-deploy-backend.yml
+
+CDK backend deploy: setup → install → detect environment → AWS auth → optional verify → build → `cdk deploy`. `stack_name` may carry an `{ENV}` token (replaced with `Alpha`/`Beta`/`Production`); `cdk_context` adds `--context key=value` lines, and `channel=<env>` is always injected.
+
+```yaml
+jobs:
+  deploy:
+    uses: krashidbuilt/actions/.github/workflows/reusable-deploy-backend.yml@v1
+    secrets: inherit
+    with:
+      stack_name: MyApp{ENV}Stack
+      role_arn: arn:aws:iam::123456789012:role/deploy-app   # optional
+```
+
+AWS auth works the same as the frontend workflow: the org-level deployer keys go through `utilities/configure-aws`, used directly when `role_arn` is empty (the default, and today's behaviour) or used to assume `role_arn` when set. The `Who am I` step logs which identity the deploy runs as.
 
 ### reusable-deploy-mobile.yml
 

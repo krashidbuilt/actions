@@ -36,6 +36,10 @@ on:
       aws_region:
         type: string
         default: "us-east-1"
+      role_arn:
+        description: "Full IAM role ARN to assume with the static key (e.g. arn:aws:iam::<account>:role/deploy-app). Empty = deploy with the static key directly, as before."
+        type: string
+        default: ""
       node_version:
         type: string
         default: "24"
@@ -80,6 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Static deployer keys. The configure-aws step reads them from here and
+    # re-exports them for later steps: unchanged when role_arn is empty, or as
+    # the assumed role's short-lived session when role_arn is set.
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -111,6 +118,44 @@ jobs:
         with:
           working_directory: ${{ inputs.working_directory }}
           package_manager: ${{ inputs.package_manager }}
+      - name: Detect environment
+        id: env
+        uses: krashidbuilt/actions/utilities/detect-environment@v1
+        with:
+          environment: ${{ inputs.environment }}
+      # deploy/frontend shells out to `aws`. Runner hosts cache different builds of
+      # runner-images:ubuntu-latest and newer ones dropped the AWS CLI (2026-10-14: the
+      # same deploy passed on `nas` and failed on another runner with "Unable to locate
+      # executable file: aws"). Install it when missing.
+      - name: Ensure AWS CLI
+        shell: bash
+        run: |
+          if command -v aws >/dev/null 2>&1; then aws --version; exit 0; fi
+          arch=$(uname -m)
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp/awscli 2>/dev/null || python3 -m zipfile -e /tmp/awscliv2.zip /tmp/awscli
+          chmod +x /tmp/awscli/aws/install /tmp/awscli/aws/dist/aws /tmp/awscli/aws/dist/aws_completer 2>/dev/null || true
+          if [ "$(id -u)" = 0 ]; then /tmp/awscli/aws/install --update; else sudo /tmp/awscli/aws/install --update; fi
+          aws --version
+      - name: Configure AWS
+        uses: krashidbuilt/actions/utilities/configure-aws@v1
+        with:
+          environment: ${{ steps.env.outputs.environment }}
+          role_arn: ${{ inputs.role_arn }}
+          aws_region: ${{ vars.AWS_REGION || inputs.aws_region }}
+      # Logs the identity later steps deploy as: the deployer user, or the
+      # assumed-role session when role_arn is set (fails if the role didn't take).
+      - name: Who am I
+        shell: bash
+        env:
+          ROLE_ARN: ${{ inputs.role_arn }}
+        run: |
+          arn=$(aws sts get-caller-identity --query Arn --output text)
+          echo "Deploying as: $arn"
+          if [ -n "$ROLE_ARN" ] && [[ "$arn" != *":assumed-role/"* ]]; then
+            echo "::error::role_arn is set ($ROLE_ARN) but the active identity is not an assumed-role session"
+            exit 1
+          fi
       - name: Verify
         if: inputs.run_verify
         uses: krashidbuilt/actions/typescript/verify@v1
@@ -154,21 +199,6 @@ jobs:
         env:
           VITE_APP_VERSION: ${{ steps.version.outputs.version }}
         run: bun run ${{ inputs.build_command }}
-      # deploy/frontend shells out to `aws`. Runner hosts cache different builds of
-      # runner-images:ubuntu-latest and newer ones dropped the AWS CLI (2026-10-14: the
-      # same deploy passed on `nas` and failed on another runner with "Unable to locate
-      # executable file: aws"). Install it when missing.
-      - name: Ensure AWS CLI
-        if: steps.version.outputs.skipped != 'true'
-        shell: bash
-        run: |
-          if command -v aws >/dev/null 2>&1; then aws --version; exit 0; fi
-          arch=$(uname -m)
-          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o /tmp/awscliv2.zip
-          unzip -q /tmp/awscliv2.zip -d /tmp/awscli 2>/dev/null || python3 -m zipfile -e /tmp/awscliv2.zip /tmp/awscli
-          chmod +x /tmp/awscli/aws/install /tmp/awscli/aws/dist/aws /tmp/awscli/aws/dist/aws_completer 2>/dev/null || true
-          if [ "$(id -u)" = 0 ]; then /tmp/awscli/aws/install --update; else sudo /tmp/awscli/aws/install --update; fi
-          aws --version
       - uses: krashidbuilt/actions/deploy/frontend@v1
         if: steps.version.outputs.skipped != 'true'
         with:
