@@ -164,11 +164,13 @@ jobs:
         run: bun run ${{ inputs.build_command }}
       - name: CDK deploy
         working-directory: ${{ inputs.infra_directory }}
+        # No env var here may start with CDK_: the aws-cdk CLI parses yargs with
+        # `.env('CDK')`, so CDK_CONTEXT would become --context and CDK_VERSION --version.
         env:
           ENVIRONMENT: ${{ steps.env.outputs.environment }}
           STACK_TEMPLATE: ${{ inputs.stack_name }}
-          CDK_CONTEXT: ${{ inputs.cdk_context }}
-          CDK_VERSION: ${{ inputs.cdk_version }}
+          CONTEXT_LINES: ${{ inputs.cdk_context }}
+          CLI_VERSION: ${{ inputs.cdk_version }}
         run: |
           set -euo pipefail
           env="$ENVIRONMENT"
@@ -181,10 +183,10 @@ jobs:
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             context_args+=( --context "$line" )
-          done <<< "$CDK_CONTEXT"
+          done <<< "$CONTEXT_LINES"
 
           echo "Deploying stack '$stack' (env=$env) with: ${context_args[*]}"
-          bunx "aws-cdk@${CDK_VERSION}" deploy "$stack" \
+          bunx "aws-cdk@${CLI_VERSION}" deploy "$stack" \
             "${context_args[@]}" \
             --require-approval never \
             --no-rollback
