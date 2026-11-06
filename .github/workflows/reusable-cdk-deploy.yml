@@ -174,12 +174,14 @@ jobs:
       - name: CDK ${{ inputs.mode }}
         working-directory: ${{ inputs.working_directory }}
         shell: bash
+        # No CDK_-prefixed names here: the aws-cdk CLI configures yargs with .env('CDK'), so every
+        # CDK_* variable is parsed as an option (CDK_CONTEXT → an extra --context, CDK_VERSION → --version).
         env:
           MODE: ${{ inputs.mode }}
           APP: ${{ inputs.app }}
           STACKS: ${{ inputs.stacks }}
-          CDK_CONTEXT: ${{ inputs.context }}
-          CDK_VERSION: ${{ inputs.cdk_version }}
+          CONTEXT_LINES: ${{ inputs.context }}
+          CLI_VERSION: ${{ inputs.cdk_version }}
           CONCURRENCY: ${{ inputs.concurrency }}
         run: |
           set -euo pipefail
@@ -194,18 +196,18 @@ jobs:
             line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
             [ -z "$line" ] && continue
             context_args+=( --context "$line" )
-          done <<< "$CDK_CONTEXT"
+          done <<< "$CONTEXT_LINES"
 
           echo "cdk $MODE --app \"$APP\" ${stack_args[*]} ${context_args[*]}"
           if [ "$MODE" = diff ]; then
             # cdk diff writes to stderr. No --fail: differences are the point, not an error.
             # pipefail keeps a real failure (synth, auth) failing the step.
-            bunx "aws-cdk@${CDK_VERSION}" diff --no-color --app "$APP" \
+            bunx "aws-cdk@${CLI_VERSION}" diff --no-color --app "$APP" \
               "${stack_args[@]}" "${context_args[@]}" 2>&1 | tee "$DIFF_FILE"
           else
             # No --no-rollback here (backend deploys use it): a failed infra stack
             # should roll back to its last good state, not sit half-applied.
-            bunx "aws-cdk@${CDK_VERSION}" deploy --app "$APP" \
+            bunx "aws-cdk@${CLI_VERSION}" deploy --app "$APP" \
               "${stack_args[@]}" "${context_args[@]}" \
               --require-approval never \
               --concurrency "$CONCURRENCY"
