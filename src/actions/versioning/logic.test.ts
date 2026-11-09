@@ -156,6 +156,37 @@ describe("getInputs", () => {
     expect(() => getInputs()).toThrow('Invalid tag_prefix "bad prefix"');
   });
 
+  it("reads an explicit version", () => {
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === "github_token") return "ghs_token123";
+      if (name === "version") return " 0.1.0 ";
+      return "";
+    });
+
+    expect(getInputs().version).toBe("0.1.0");
+  });
+
+  it.each(["v0.1.0", "0.1", "latest"])("rejects an explicit version %s that is not bare semver", (version) => {
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === "github_token") return "ghs_token123";
+      if (name === "version") return version;
+      return "";
+    });
+
+    expect(() => getInputs()).toThrow(`Invalid version "${version}"`);
+  });
+
+  it("rejects version together with promote_from", () => {
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === "github_token") return "ghs_token123";
+      if (name === "version") return "0.3.0";
+      if (name === "promote_from") return "alpha";
+      return "";
+    });
+
+    expect(() => getInputs()).toThrow("version and promote_from cannot both be set");
+  });
+
   it("throws when github_token is missing and dry_run is false", () => {
     mockGetInput.mockReturnValue("");
 
@@ -466,9 +497,13 @@ describe("updateVersionFile", () => {
   it("executes npm version with --no-git-tag-version", async () => {
     await updateVersionFile("/workspace", "1.2.3");
 
-    expect(mockExecExec).toHaveBeenCalledWith("npm", ["version", "1.2.3", "--no-git-tag-version", "--force"], {
-      cwd: "/workspace",
-    });
+    expect(mockExecExec).toHaveBeenCalledWith(
+      "npm",
+      ["version", "1.2.3", "--no-git-tag-version", "--allow-same-version", "--force"],
+      {
+        cwd: "/workspace",
+      },
+    );
   });
 });
 
@@ -1114,7 +1149,7 @@ describe("versioning run", () => {
 
       expect(mockExecExec).toHaveBeenCalledWith(
         "npm",
-        ["version", "1.0.1", "--no-git-tag-version", "--force"],
+        ["version", "1.0.1", "--no-git-tag-version", "--allow-same-version", "--force"],
         expect.objectContaining({ cwd: expect.any(String) }),
       );
       expect(mockExecExec).toHaveBeenCalledWith(
@@ -1530,7 +1565,7 @@ describe("versioning run", () => {
 
       expect(mockExecExec).toHaveBeenCalledWith(
         "npm",
-        ["version", "0.3.0-beta.2", "--no-git-tag-version", "--force"],
+        ["version", "0.3.0-beta.2", "--no-git-tag-version", "--allow-same-version", "--force"],
         expect.objectContaining({ cwd: expect.any(String) }),
       );
       expect(mockExecExec).toHaveBeenCalledWith("git", ["commit", "-m", "chore(release): v0.3.0-beta.2"]);
@@ -1754,6 +1789,95 @@ describe("versioning run", () => {
         "git",
         ["log", "--pretty=format:- %s (%h)", "-20", "--", "."],
         expect.objectContaining({ cwd: "/repo/lib/review-access" }),
+      );
+    });
+  });
+
+  describe("explicit version (the publish workflow's record step)", () => {
+    function mockNewRelease() {
+      const mockCreateRelease = vi.fn(async () => ({
+        data: { html_url: "https://git.example/krashidbuilt/http/releases/x" },
+      }));
+      mockGetOctokit.mockReturnValue({
+        rest: {
+          repos: {
+            getReleaseByTag: vi.fn(async () => {
+              const err = new Error("Not Found") as Error & { status: number };
+              err.status = 404;
+              throw err;
+            }),
+            createRelease: mockCreateRelease,
+          },
+        },
+      });
+      return mockCreateRelease;
+    }
+
+    // krashidbuilt/http, 2026-11-09: no tags, package.json 0.0.0, one feat commit. The
+    // compute call said 0.1.0 and publish shipped 0.1.0 (writing it into package.json);
+    // the record call then bumped package.json's 0.1.0 again and tagged v0.2.0.
+    it("tags a first release with the number that was published, not a second bump", async () => {
+      mockGetLatestGitTag.mockResolvedValue(null);
+      mockDetermineBumpTypeFromCommits.mockReturnValue("minor");
+      mockBumpVersion.mockImplementation((current: string) => {
+        const [major, minor] = current.split(".").map(Number);
+        return `${major}.${minor + 1}.0`;
+      });
+      const mockCreateRelease = mockNewRelease();
+
+      // Compute call: no side effects.
+      setupInputs({ create_tag: "false", create_release: "false", update_version_file: "false" });
+      mockReadProjectVersion.mockReturnValue("0.0.0");
+      await run();
+      const computed = mockSetOutput.mock.calls.find(([name]) => name === "version")?.[1];
+      expect(computed).toBe("0.1.0");
+
+      // Publish writes the computed number into package.json.
+      mockReadProjectVersion.mockReturnValue(computed);
+      mockSetOutput.mockClear();
+      mockReadProjectVersion.mockClear();
+      mockBumpVersion.mockClear();
+
+      // Record call, handed the computed number.
+      setupInputs({ update_version_file: "false", version: computed });
+      await run();
+
+      expect(mockReadProjectVersion).not.toHaveBeenCalled();
+      expect(mockBumpVersion).not.toHaveBeenCalled();
+      expect(mockSetOutput).toHaveBeenCalledWith("version", "0.1.0");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "v0.1.0");
+      expect(mockSetOutput).toHaveBeenCalledWith("bump_type", "explicit");
+      expect(mockExecExec).toHaveBeenCalledWith("git", ["tag", "-a", "v0.1.0", "-m", "Release v0.1.0"]);
+      expect(mockExecExec).not.toHaveBeenCalledWith("git", ["tag", "-a", "v0.2.0", "-m", "Release v0.2.0"]);
+      expect(mockCreateRelease).toHaveBeenCalledWith(expect.objectContaining({ tag_name: "v0.1.0" }));
+      expect(mockSetFailed).not.toHaveBeenCalled();
+    });
+
+    it("uses the explicit version on a tagged repo too, with the tag as previous_version", async () => {
+      setupInputs({ version: "1.0.1" });
+      mockGetLatestGitTag.mockResolvedValue("v1.0.0");
+      mockNewRelease();
+
+      await run();
+
+      expect(mockBumpVersion).not.toHaveBeenCalled();
+      expect(mockSetOutput).toHaveBeenCalledWith("previous_version", "1.0.0");
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "v1.0.1");
+    });
+
+    it("tags an explicit prerelease as given, without searching for the next counter", async () => {
+      setupInputs({ version: "1.1.0-alpha.3", release_prerelease: "true" });
+      mockGetLatestGitTag.mockResolvedValue("v1.0.0");
+      const mockCreateRelease = mockNewRelease();
+
+      await run();
+
+      expect(mockBumpVersion).not.toHaveBeenCalled();
+      expect(mockTagExists).toHaveBeenCalledTimes(1); // only the create-tag guard
+      expect(mockSetOutput).toHaveBeenCalledWith("tag", "v1.1.0-alpha.3");
+      expect(mockSetOutput).toHaveBeenCalledWith("is_prerelease", "true");
+      expect(mockCreateRelease).toHaveBeenCalledWith(
+        expect.objectContaining({ tag_name: "v1.1.0-alpha.3", prerelease: true }),
       );
     });
   });

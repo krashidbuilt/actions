@@ -75,6 +75,11 @@ export const config = defineAction({
         "Promote version by replacing this prerelease identifier (e.g. 'alpha' promotes alpha→target channel)",
       default: "",
     },
+    version: {
+      description:
+        "Use this exact version instead of computing one (no bump, no tag or package.json read). Pass the version output of an earlier side-effect-free call so the tag and release match what was published",
+      default: "",
+    },
   },
   outputs: {
     version: {

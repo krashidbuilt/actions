@@ -141,9 +141,12 @@ jobs:
       #
       # So: compute the number with no side effects, publish, and only record
       # the release once the package is actually in the registry. The second
-      # call recomputes the same number — the tag state and the commits it reads
-      # are unchanged by publishing — and is where the tag, the release and the
-      # optional version commit are made.
+      # call is where the tag, the release and the optional version commit are
+      # made, and it is handed the first call's number rather than computing
+      # its own. Recomputing is not safe: publish writes the new version into
+      # package.json, and on a repo with no tags yet the number is bumped from
+      # package.json — so krashidbuilt/http's first run published 0.1.0 and
+      # then tagged v0.2.0.
       - uses: krashidbuilt/actions/versioning@v1
         id: version
         with:
@@ -183,6 +186,7 @@ jobs:
           create_tag: true
           create_release: ${{ inputs.create_release }}
           update_version_file: ${{ inputs.update_version_file }}
+          version: ${{ steps.version.outputs.version }}
           release_prerelease: ${{ github.ref_name != inputs.production_branch }}
           prerelease_identifier: ${{ github.ref_name == 'develop' && 'alpha' || github.ref_name == 'staging' && 'beta' || '' }}
           tag_prefix: ${{ inputs.tag_prefix }}

@@ -44,8 +44,16 @@ jobs:
 ```
 
 Merging to `main` then runs verify, computes the version from the conventional
-commits since the last tag, tags it, and publishes. Nothing is pushed back to
-the branch — the tags are the release history.
+commits since the last tag, publishes it, and tags and releases that same
+number. Nothing is pushed back to the branch — the tags are the release history.
+
+On a repo with no tags yet, the first version is `package.json`'s version bumped
+by the commits: `0.0.0` plus a `feat:` publishes and tags `0.1.0`. (Until
+2026-11-09 the tag step bumped a second time from the `package.json` publish had
+just written, so krashidbuilt/http published `0.1.0` and tagged `v0.2.0`.) To
+check what a repo's next run will do: `bunx tsx scripts/versioning-dry-run.ts
+<repo-dir> [--ref <rev>] [--tag v0.1.0=<rev>]` prints the published version and
+the tag; it exits 1 if they disagree.
 
 **Private or source-only** — `private: true`, run with `bun run src/index.ts`.
 Gets `.gitea/workflows/verify.yml` calling `reusable-typescript-verify.yml@v1`
@@ -53,10 +61,13 @@ on push and pull_request. Same checks, no publish, no secret.
 
 ### Before wiring a repo up
 
-- **Seed a tag matching `package.json`** (`git tag v0.1.0 && git push origin v0.1.0`).
-  With no tags the versioning action reads the last 20 commits, and a single
-  `!:` or `BREAKING CHANGE` in that window makes the first release `1.0.0`.
-  With a `tag_prefix`, the seed tag is `<prefix><version>`
+- **Set `package.json` to the version before the first release**, or seed a tag.
+  With no tags the first release is `package.json` bumped by the last 20
+  commits, so `0.0.0` becomes `0.1.0` after a `feat:`, and `0.1.0` becomes
+  `0.2.0`. A single `!:` or `BREAKING CHANGE` in that window makes it `1.0.0`
+  instead; if the history has one, seed a tag matching `package.json`
+  (`git tag v0.1.0 && git push origin v0.1.0`) so the first run counts only the
+  commits after it. With a `tag_prefix`, the seed tag is `<prefix><version>`
   (`git tag review-access-v0.1.0`): the action ignores tags without its prefix.
 - **Check `has_actions`.** A repo can have Actions disabled, in which case the
   workflow sits on `main` and nothing ever runs, with no error anywhere —
@@ -411,6 +422,11 @@ bun run test               # Vitest
 
 Set `tag_prefix` (e.g. `my-package-v`) when one repo versions more than one package:
 the action then reads and writes only tags with that prefix.
+
+Set `version` (e.g. `${{ steps.version.outputs.version }}`) to tag and release an
+exact number instead of computing one. The publish workflow computes once with
+`create_tag: false`, publishes, then records with `version:` set, so the tag is
+always the number that reached the registry.
 
 ### TypeScript
 
