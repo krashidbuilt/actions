@@ -48,10 +48,18 @@ export interface VersioningInputs {
   tagPrefix: string;
   /** True when promote_from is set but prerelease_identifier is empty (promote to stable release). */
   promoteToStable: boolean;
+  /**
+   * An exact version to release instead of computing one. The publish workflow computes the
+   * number once, publishes it, then passes it here so the tag and release record that number.
+   */
+  version: string;
 }
 
 /** Characters allowed in a tag prefix: a safe subset of what git accepts in a ref name. */
 const TAG_PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+/** An explicit `version` input: MAJOR.MINOR.PATCH with an optional prerelease, no prefix. */
+const EXPLICIT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function getInputs(): VersioningInputs {
   const dryRun = core.getInput("dry_run") === "true";
@@ -65,6 +73,15 @@ export function getInputs(): VersioningInputs {
     throw new Error(
       `Invalid tag_prefix "${tagPrefix}": use letters, digits, '.', '_', '/' or '-', starting with a letter or digit`,
     );
+  }
+
+  const version = core.getInput("version").trim();
+  if (version && !EXPLICIT_VERSION_PATTERN.test(version)) {
+    throw new Error(`Invalid version "${version}": expected MAJOR.MINOR.PATCH[-prerelease], without a tag prefix`);
+  }
+  const promoteFrom = core.getInput("promote_from") || "";
+  if (version && promoteFrom) {
+    throw new Error("version and promote_from cannot both be set");
   }
 
   return {
@@ -82,9 +99,10 @@ export function getInputs(): VersioningInputs {
     gitUserName: git.userName(),
     gitUserEmail: git.userEmail(),
     dryRun,
-    promoteFrom: core.getInput("promote_from") || "",
+    promoteFrom,
     tagPrefix,
-    promoteToStable: !core.getInput("prerelease_identifier") && !!core.getInput("promote_from"),
+    promoteToStable: !core.getInput("prerelease_identifier") && !!promoteFrom,
+    version,
   };
 }
 
@@ -170,9 +188,11 @@ export async function generateChangelog(latestTag: string | null, scopeDir?: str
 /**
  * Update version in package.json using npm version (no git operations).
  * Git commit and tag are handled separately for reliability in monorepo subdirectories.
+ * `--allow-same-version`: in the publish workflow, publish has already written this version
+ * into package.json, and npm otherwise fails with "Version not changed".
  */
 export async function updateVersionFile(workingDir: string, newVersion: string): Promise<void> {
-  await exec.exec("npm", ["version", newVersion, "--no-git-tag-version", "--force"], {
+  await exec.exec("npm", ["version", newVersion, "--no-git-tag-version", "--allow-same-version", "--force"], {
     cwd: workingDir,
   });
   logger.info(`Updated package.json to ${newVersion}`);
@@ -192,17 +212,27 @@ export async function run(): Promise<void> {
     // Configure git (needed for tag detection even in dry run)
     await configureGitIdentity(inputs.gitUserName, inputs.gitUserEmail, { silent: false });
 
-    // Tag-driven versioning: prefer latest stable tag, fall back to package.json for bootstrap
+    // Tag-driven versioning: prefer latest stable tag, fall back to package.json for bootstrap.
+    // With an explicit version, package.json is not read at all: by the time the publish
+    // workflow records its release, publish has already written the new version into the
+    // working tree's package.json, and bumping from that again tagged krashidbuilt/http's
+    // first release v0.2.0 over a published 0.1.0.
     const latestStableTag = await getLatestGitTag(true, inputs.tagPrefix);
     const packageVersion = latestStableTag
       ? stripTagPrefix(latestStableTag, inputs.tagPrefix)
-      : readProjectVersion(workingDir);
+      : inputs.version
+        ? ""
+        : readProjectVersion(workingDir);
 
     logger.info("Current state", {
       packageVersion,
       latestStableTag,
       tagPrefix: inputs.tagPrefix,
-      versionSource: latestStableTag ? "git tag" : "package.json (bootstrap)",
+      versionSource: latestStableTag
+        ? "git tag"
+        : inputs.version
+          ? "none (explicit version)"
+          : "package.json (bootstrap)",
       isPrerelease: inputs.releasePrerelease,
     });
 
@@ -331,15 +361,21 @@ export async function run(): Promise<void> {
     let newVersion = "";
 
     // Determine bump type once (used by both prerelease and stable paths)
-    let bumpType: VersionBumpType | "none";
-    if (inputs.bumpType === "auto") {
+    let bumpType: VersionBumpType | "none" | "explicit";
+    if (inputs.version) {
+      newVersion = inputs.version;
+      bumpType = "explicit";
+      logger.info(`Using the given version: ${newVersion} (nothing computed)`);
+    } else if (inputs.bumpType === "auto") {
       bumpType = await determineBumpType(latestStableTag, commitScope(inputs, workingDir));
       logger.info(`Auto-detected bump type: ${bumpType}`, { referenceTag: latestStableTag });
     } else {
       bumpType = inputs.bumpType;
     }
 
-    if (inputs.releasePrerelease) {
+    if (bumpType === "explicit") {
+      // newVersion is already set
+    } else if (inputs.releasePrerelease) {
       // Prerelease: derive next stable base from tag + bump, then increment prerelease counter
       const effectiveBump = bumpType === "none" ? "patch" : bumpType;
       const nextStableBase = bumpVersion(packageVersion, effectiveBump);
