@@ -46,8 +46,14 @@
 # BRIEF FORMAT (checked before any upload, and by --validate-brief): front matter between
 # '---' lines with title (<= 100), summary (one line, <= 200), status, and optionally
 # status_reason, parent and superseded_by (revision ids), numbers ('  - <label>: <value>', <= 12)
-# and links ('  - <label>: <http(s) url>', <= 10); then markdown with the H2 sections
-# '## What changed', '## Limitations' and '## Recommendation' (others allowed). <= 32 KiB.
+# and links ('  - <label>: <http(s) url>' or '  - <label>: /<project>/<rev>/', <= 10); then
+# markdown with the H2 sections '## What changed', '## Limitations' and '## Recommendation'
+# (others allowed). <= 32 KiB. Clients read briefs on white-label hosts that serve the same paths,
+# so a brief never shows a krashidbuilt.com address: a page of the 3D site is linked by its path
+# (/<project>/<rev>/, also as a markdown link target), never as https://3d.krashidbuilt.com/...;
+# a krashidbuilt.com host in visible text (a bare URL, a link label, a title) is refused, and so is
+# a link to any krashidbuilt.com host but git.dsm.krashidbuilt.com (the viewer hides that one from
+# clients).
 #
 # A revision is immutable: a new sha is a new folder, and publishing a rev that is already in
 # the index is refused. A brief or status change writes only brief.json, brief.md, status.json
@@ -101,6 +107,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 STATUSES = ("concept", "checked", "recommended", "superseded", "signed-off")
 REV_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -112,6 +119,22 @@ MAX_TITLE, MAX_SUMMARY, MAX_REASON = 100, 200, 300
 MAX_NUMBERS, MAX_LINKS, MAX_CELL = 12, 10, 60
 EXCERPT = 280
 ISO_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9:.]+Z?)?$")
+
+# Briefs are shown on the staff host and on white-label client hosts that serve the same
+# /<project>/<rev>/ paths, so a brief never shows a krashidbuilt.com address and links a page of
+# the site by its path. A same-site path is the viewer's safePath rule (site-content/3d/index.html
+# in krashidbuilt/infrastructure), kept in step with it:
+#   /^\/[A-Za-z0-9._~/-]*$/.test(p) && !p.includes("..") && !p.includes("//")
+SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
+# The 3D review site's staff host. The bucket is named after it (SSM /platform/3d/bucket), but a
+# brief is checked before the bucket is known (--validate-brief needs only python3).
+REVIEW_HOSTS = ("3d.krashidbuilt.com",)
+# The viewer's STAFF_ONLY_HOSTS: it drops links to these for clients, so they may be link targets.
+STAFF_ONLY_HOSTS = ("git.dsm.krashidbuilt.com",)
+INTERNAL_HOST_RE = re.compile(r"(?<![A-Za-z0-9-])(?:[A-Za-z0-9-]+\.)*krashidbuilt\.com(?![A-Za-z0-9-])", re.I)
+# The viewer's inline markdown (INLINE): a code span shows its text, a link its label only.
+MD_INLINE_RE = re.compile(r"(`([^`]+)`)|(\[([^\]]+)\]\(([^)\s]+)\))")
+FENCE_RE = re.compile(r"^\s*```")
 
 
 class BriefError(Exception):
@@ -215,6 +238,78 @@ def parse_sections(body: str, errors: list[str]) -> list[dict]:
     return sections
 
 
+def safe_path(p: str) -> bool:
+    return bool(SAFE_PATH_RE.match(p)) and ".." not in p and "//" not in p
+
+
+def _host(url: str) -> str:
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _as_path(url: str) -> str:
+    """The same page as a same-site path, for the error message."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "/<project>/<rev>/"
+    path = parts.path or "/"
+    return path + (f"#{parts.fragment}" if parts.fragment else "") if safe_path(path) else "/<project>/<rev>/"
+
+
+def check_href(where: str, url: str, errors: list[str]) -> None:
+    """A link the viewer shows to clients: no 3D review host, no other krashidbuilt.com host
+    (a staff-only host is fine: the viewer drops it for clients)."""
+    host = _host(url)
+    if host in REVIEW_HOSTS:
+        errors.append(
+            f"{where}: {url} is on the staff host {host}, which clients must never see;"
+            f" link the page by its path instead: {_as_path(url)} (/<project>/<rev>/ works on every host)"
+        )
+    elif host not in STAFF_ONLY_HOSTS and INTERNAL_HOST_RE.fullmatch(host):
+        errors.append(
+            f"{where}: {url} shows the internal host {host} to clients (only links to"
+            f" {', '.join(STAFF_ONLY_HOSTS)} are hidden from them); link a 3D page by its path: /<project>/<rev>/"
+        )
+
+
+def check_visible(where: str, text: str, errors: list[str]) -> None:
+    """Text a client reads (not a link target) never names a krashidbuilt.com host."""
+    m = INTERNAL_HOST_RE.search(text)
+    if m:
+        errors.append(
+            f"{where}: '{m.group(0)}' is visible text, and clients must never see a krashidbuilt.com address;"
+            " link a 3D page by its path, e.g. [label](/<project>/<rev>/), or drop the address"
+        )
+
+
+def check_body(body: str, first_line: int, errors: list[str]) -> None:
+    """Every visible line of the markdown body, and every link target, as the viewer renders it:
+    code spans and fenced blocks show their text, a link shows its label and is checked as a link."""
+    fenced = False
+    for i, line in enumerate(body.split("\n")):
+        where = f"line {first_line + i}"
+        if FENCE_RE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            check_visible(where, line, errors)
+            continue
+        targets: list[str] = []
+
+        def visible(m: re.Match) -> str:
+            if m.group(1):
+                return m.group(2)
+            targets.append(m.group(5))
+            return m.group(4)
+
+        check_visible(where, MD_INLINE_RE.sub(visible, line), errors)
+        for url in targets:
+            check_href(f"{where}: link target", url, errors)
+
+
 def plain(markdown: str, limit: int = EXCERPT) -> str:
     """Markdown → one line of plain text for the index card's hover (rendered as text, never HTML)."""
     out = []
@@ -277,25 +372,38 @@ def parse_brief(text: str) -> dict:
         label, value = m.group(1).strip(), m.group(2).strip()
         if len(label) > MAX_CELL or len(value) > MAX_CELL:
             errors.append(f"line {n}: number label and value are at most {MAX_CELL} characters each")
+        check_visible(f"line {n}", f"{label} {value}", errors)
         numbers.append({"label": label, "value": value})
     if len(numbers) > MAX_NUMBERS:
         errors.append(f"{len(numbers)} numbers (at most {MAX_NUMBERS})")
 
     links = []
     for n, item in meta.get("links", []):
-        m = re.match(r"^(.+?):\s+(https?://\S+)$", _scalar(item))
+        m = re.match(r"^(.+?):\s+(https?://\S+|/\S*)$", _scalar(item))
         if not m:
-            errors.append(f"line {n}: a link is '- <label>: <http(s) url>'")
+            errors.append(f"line {n}: a link is '- <label>: <http(s) url or /<project>/<rev>/ path>'")
             continue
         label, url = m.group(1).strip(), m.group(2)
         if len(label) > MAX_CELL:
             errors.append(f"line {n}: link label is at most {MAX_CELL} characters")
-        if re.search(r"[\s<>\"'`]", url):
+        if url.startswith("/"):
+            if not safe_path(url):
+                errors.append(
+                    f"line {n}: a link path is a same-site path like /<project>/<rev>/: letters, digits,"
+                    f" . _ ~ - and /, no '..' and no '//' (got '{url}')"
+                )
+        elif re.search(r"[\s<>\"'`]", url):
             errors.append(f"line {n}: the link URL has characters a URL cannot have")
+        else:
+            check_href(f"line {n}", url, errors)
+        check_visible(f"line {n}: link label", label, errors)
         links.append({"label": label, "url": url})
     if len(links) > MAX_LINKS:
         errors.append(f"{len(links)} links (at most {MAX_LINKS})")
 
+    for key in ("title", "summary", "status_reason"):
+        check_visible(f"'{key}'", str(meta.get(key, "")), errors)
+    check_body(body, len(text.split("\n")) - len(body.split("\n")) + 1, errors)
     sections = parse_sections(body, errors)
     if errors:
         raise BriefError(errors)
