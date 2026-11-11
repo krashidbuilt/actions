@@ -3,10 +3,13 @@
 
 The bucket is a directory ($FAKE_S3/<key>); object metadata goes to <key>.meta.json under
 $FAKE_S3_META. Every call is appended to $FAKE_AWS_LOG as one JSON line. $FAKE_AWS_FAIL_READ
-makes reads of that key fail with a non-404 error.
+makes reads of that key fail with a non-404 error. s3api get-object/put-object model versions
+and ETags (md5 of the body): put-object honours --if-match, and $FAKE_AWS_CHANGE_AFTER_GET
+changes the object right after a get-object (a concurrent writer).
 """
 
 import fnmatch
+import hashlib
 import json
 import os
 import shutil
@@ -35,6 +38,11 @@ def put(src, key):
     os.makedirs(os.path.dirname(meta), exist_ok=True)
     with open(meta, "w") as f:
         json.dump({"cacheControl": opt("--cache-control"), "contentType": opt("--content-type")}, f)
+
+
+def etag(path):
+    with open(path, "rb") as f:
+        return '"' + hashlib.md5(f.read()).hexdigest() + '"'
 
 
 def keys(prefix=""):
@@ -90,6 +98,42 @@ elif args[:2] == ["s3api", "list-objects-v2"]:
         print("\t".join(sorted({k.split("/")[0] + "/" for k in keys() if "/" in k})) or "None")
     else:
         print("\t".join(keys(opt("--prefix", ""))) or "None")
+elif args[:2] == ["s3api", "get-object"]:
+    k, path = opt("--key"), os.path.join(ROOT, opt("--key"))
+    if not os.path.isfile(path):
+        sys.stderr.write("An error occurred (NoSuchKey) when calling the GetObject operation: The specified key does not exist.\n")
+        sys.exit(254)
+    shutil.copyfile(path, args[-1])
+    m = {}
+    if os.path.isfile(os.path.join(META, k + ".meta.json")):
+        with open(os.path.join(META, k + ".meta.json")) as f:
+            m = json.load(f)
+    resp = {"ETag": etag(path), "VersionId": m.get("versionId") or "v-" + etag(path)[1:11],
+            "Metadata": m.get("metadata") or {}}
+    if m.get("cacheControl"):
+        resp["CacheControl"] = m["cacheControl"]
+    if m.get("contentType"):
+        resp["ContentType"] = m["contentType"]
+    print(json.dumps(resp, indent=4))
+    if os.environ.get("FAKE_AWS_CHANGE_AFTER_GET"):
+        with open(path, "a") as f:
+            f.write("<!-- changed -->")
+elif args[:2] == ["s3api", "put-object"]:
+    k, path = opt("--key"), os.path.join(ROOT, opt("--key"))
+    if opt("--if-match") is not None and (not os.path.isfile(path) or etag(path) != opt("--if-match")):
+        sys.stderr.write("\nAn error occurred (PreconditionFailed) when calling the PutObject operation: "
+                         "At least one of the pre-conditions you specified did not hold\n")
+        sys.exit(254)
+    put(opt("--body"), k)
+    metadata = opt("--metadata")
+    if metadata and metadata.startswith("file://"):
+        with open(metadata[7:]) as f:
+            metadata = f.read()
+    version = "v-" + etag(path)[1:11]
+    with open(os.path.join(META, k + ".meta.json"), "w") as f:
+        json.dump({"cacheControl": opt("--cache-control"), "contentType": opt("--content-type"),
+                   "metadata": json.loads(metadata) if metadata else {}, "versionId": version}, f)
+    print(version)
 elif args[:2] == ["cloudfront", "create-invalidation"]:
     print("IFAKE")
 else:

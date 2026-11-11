@@ -702,3 +702,174 @@ describe("revision page banner", () => {
     expect(html).toContain("/^[A-Za-z0-9._-]{1,64}$/.test(c.supersededBy)");
   });
 });
+
+describe("--add-loader", () => {
+  // Byte-identical to krashidbuilt/cadkit tests/test_viewer.py REVIEW_LOADER_BLOCK (the block
+  // cadkit's viewer.html carries): a page built by a newer cadkit counts as already done.
+  const CADKIT_BLOCK =
+    '<script id="cadkit-review-loader">(function(){if(location.protocol==="https:"&&' +
+    "/^\\/[a-z0-9-]+\\/[A-Za-z0-9._-]+\\/$/.test(location.pathname))" +
+    '{var s=document.createElement("script");s.src="/_review/notes/v1/loader.js";' +
+    "s.defer=true;document.head.appendChild(s);}})();</script>";
+  const KEY = "passport/r1/index.html";
+  const PAGE =
+    '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>T</title>\n<style>\nbody{margin:0}\n</style>\n</head>\n<body>\n<canvas></canvas>\n<!-- 3d-status-banner:start -->\n<script>x()</script>\n<!-- 3d-status-banner:end -->\n</body>\n</html>\n';
+  const HEADERS = { cacheControl: "no-cache", contentType: "text/html; charset=utf-8", metadata: { origin: "cadkit" } };
+
+  const live = (page = PAGE, headers: object = HEADERS) => {
+    for (const [key, body] of [
+      [KEY, page],
+      ["passport/r1/face.json", "{}"],
+      ["passport/r1/status.json", "{}"],
+      ["passport/r1/renders/iso.png", "png"],
+      ["passport/index.json", '{"id":"passport","revisions":[{"rev":"r1"}]}'],
+      ["index.json", "{}"],
+    ]) {
+      mkdirSync(join(s3, key, ".."), { recursive: true });
+      writeFileSync(join(s3, key), body);
+    }
+    mkdirSync(join(tmp, "meta", "passport", "r1"), { recursive: true });
+    writeFileSync(join(tmp, "meta", `${KEY}.meta.json`), JSON.stringify({ ...headers, versionId: "VOLD1" }));
+  };
+  const addLoader = (extra: string[] = [], envExtra: NodeJS.ProcessEnv = {}) =>
+    sh(["--project", "passport", "--add-loader", "r1", ...extra], envExtra);
+  const puts = () => calls().filter((c) => c[0] === "s3api" && c[1] === "put-object");
+
+  const bootstrap = (href: string) => {
+    const src = `const U=new URL(${JSON.stringify(href)});const appended=[];
+globalThis.location={protocol:U.protocol,pathname:U.pathname};
+globalThis.document={createElement:t=>({tagName:t}),head:{appendChild:e=>appended.push(e.src)}};
+${CADKIT_BLOCK.replace(/^<script[^>]*>/, "").replace(/<\/script>$/, "")}
+process.stdout.write(JSON.stringify(appended));`;
+    const r = spawnSync("node", ["-"], { input: src, encoding: "utf-8" });
+    expect(r.status, r.stderr).toBe(0);
+    return JSON.parse(r.stdout);
+  };
+
+  test("inserts cadkit's block, byte for byte, on its own line before </head>", () => {
+    const src = join(tmp, "in.html");
+    const out = join(tmp, "out.html");
+    writeFileSync(src, PAGE);
+    const r = py(["page", "loader", src, out, KEY]);
+    expect(r.status).toBe(0);
+    expect(readFileSync(out, "utf-8")).toBe(PAGE.replace("</style>\n</head>", `</style>\n${CADKIT_BLOCK}\n</head>`));
+    expect(r.stdout).toBe(`--- live/${KEY}\n+++ new/${KEY}\n@@ -8,2 +8,3 @@\n </style>\n+${CADKIT_BLOCK}\n </head>\n`);
+    // A page cadkit built with the block is already done; a different loader is not touched.
+    writeFileSync(src, readFileSync(out, "utf-8"));
+    expect(py(["page", "loader", src, join(tmp, "o2.html"), KEY]).status).toBe(3);
+    writeFileSync(src, '<head><script src="/_review/notes/v1/loader.js"></script></head>');
+    expect(py(["page", "loader", src, join(tmp, "o3.html"), KEY]).status).toBe(2);
+    writeFileSync(src, "<body>no head</body>");
+    expect(py(["page", "loader", src, join(tmp, "o4.html"), KEY]).status).toBe(2);
+    expect(
+      existsSync(join(tmp, "o2.html")) || existsSync(join(tmp, "o3.html")) || existsSync(join(tmp, "o4.html")),
+    ).toBe(false);
+  });
+
+  test("the bootstrap requests the loader only on an https revision page", () => {
+    for (const href of [
+      "file:///Users/me/out/index.html",
+      "http://localhost:8000/passport/r1/",
+      "https://3d.krashidbuilt.com/",
+      "https://3d.krashidbuilt.com/passport/",
+      "https://3d.krashidbuilt.com/passport/r1/index.html",
+      "https://3d.krashidbuilt.com/_site/r1/",
+    ]) {
+      expect(bootstrap(href), href).toEqual([]);
+    }
+    expect(bootstrap("https://3d.kb.3njoy.net/passport/r1/")).toEqual(["/_review/notes/v1/loader.js"]);
+  });
+
+  test("writes only the page, differing by the block, with the same headers, and invalidates two paths", () => {
+    live();
+    const before = snapshot();
+    const r = addLoader();
+    expect(r.status, r.stderr).toBe(0);
+    expect(changed(before, snapshot())).toEqual([KEY]);
+    expect(obj(KEY)).toBe(PAGE.replace("</head>", `${CADKIT_BLOCK}\n</head>`));
+    expect(meta(KEY)).toMatchObject(HEADERS);
+    expect(puts()).toHaveLength(1);
+    const put = puts()[0];
+    expect(put[put.indexOf("--if-match") + 1]).toBe(`"${createHash("md5").update(PAGE).digest("hex")}"`);
+    expect(writes()).toHaveLength(1); // the invalidation; no s3 cp/sync
+    expect(invalidated()).toEqual(["/passport/r1/", "/passport/r1/index.html"]);
+    expect(r.stdout).toContain(`+${CADKIT_BLOCK}`);
+    expect(r.stdout).toContain("previous VersionId: VOLD1");
+    expect(r.stdout).toContain("--copy-source '3d.example.com/passport/r1/index.html?versionId=VOLD1'");
+    expect(calls().some((c) => c[0] === "ssm")).toBe(false); // --bucket/--distribution-id given
+  });
+
+  test("a rerun resumes: writes nothing and invalidates the same two paths", () => {
+    live();
+    expect(addLoader().status).toBe(0);
+    const after = snapshot();
+    writeFileSync(join(tmp, "aws.log"), "");
+    const r = addLoader();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("already on");
+    expect(changed(after, snapshot())).toEqual([]);
+    expect(puts()).toHaveLength(0);
+    expect(invalidated()).toEqual(["/passport/r1/", "/passport/r1/index.html"]);
+  });
+
+  test("a page changed between read and write is refused (ETag mismatch): nothing written or invalidated", () => {
+    live();
+    const r = addLoader([], { FAKE_AWS_CHANGE_AFTER_GET: "1" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("changed since it was read");
+    expect(obj(KEY)).toBe(`${PAGE}<!-- changed -->`);
+    expect(invalidated()).toEqual([]);
+  });
+
+  test("no defaults lost: missing headers fall back to no-cache and text/html; no metadata flag", () => {
+    live(PAGE, {});
+    expect(addLoader().status).toBe(0);
+    expect(meta(KEY)).toMatchObject({
+      cacheControl: "no-cache",
+      contentType: "text/html; charset=utf-8",
+      metadata: {},
+    });
+    expect(puts()[0]).not.toContain("--metadata");
+  });
+
+  test("an absent Cache-Control does not shift the Content-Type into its place", () => {
+    live(PAGE, { contentType: "text/html" });
+    expect(addLoader().status).toBe(0);
+    expect(meta(KEY)).toMatchObject({ cacheControl: "no-cache", contentType: "text/html" });
+  });
+
+  test("refuses other modes, a missing page and a foreign loader without writing", () => {
+    live();
+    const before = snapshot();
+    for (const extra of [
+      ["--set-status", "r1", "checked", "--reason", "x"],
+      ["--brief", briefFile("b.md")],
+      ["--dir", viewer("v")],
+      ["--rev", "r2"],
+      ["--title", "t"],
+    ]) {
+      const r = addLoader(extra);
+      expect(r.status, extra.join(" ")).toBe(2);
+    }
+    expect(sh(["--project", "passport", "--add-loader", "../x"]).status).toBe(2);
+    expect(calls()).toEqual([]);
+    expect(sh(["--project", "passport", "--add-loader", "nope"]).stderr).toContain("does not exist");
+    writeFileSync(join(s3, KEY), '<head><script src="/_review/notes/v1/loader.js"></script></head>');
+    const foreign = snapshot();
+    expect(addLoader().status).toBe(2);
+    expect(changed(foreign, snapshot())).toEqual([]);
+    expect(changed(before, foreign)).toEqual([KEY]);
+    expect(puts()).toHaveLength(0);
+    expect(invalidated()).toEqual([]);
+  });
+
+  test("--dry-run writes nothing", () => {
+    live();
+    const before = snapshot();
+    const r = addLoader(["--dry-run"]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(changed(before, snapshot())).toEqual([]);
+    expect(puts()).toHaveLength(0);
+    expect(r.stdout).toContain("dry-run: aws s3api put-object");
+  });
+});

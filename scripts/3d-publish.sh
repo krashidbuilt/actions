@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Publish one CAD project revision to https://3d.krashidbuilt.com, attach its brief, or change
-# its status.
+# Publish one CAD project revision to https://3d.krashidbuilt.com, attach its brief, change
+# its status, or add the review-notes loader to a live revision page.
 #
 #   scripts/3d-publish.sh --project passport --project-title "Passport enclosure" \
 #     --rev "$(git rev-parse --short HEAD)" --title "Passport enclosure v0 (454261 cell)" \
@@ -10,6 +10,7 @@
 #   scripts/3d-publish.sh --project passport --rev <rev> --brief <file.md> [--at ISO]
 #   scripts/3d-publish.sh --project passport --set-status <rev> superseded --superseded-by <rev2> \
 #     --reason "replaced by the controls v3 set" [--at ISO]
+#   scripts/3d-publish.sh --project passport --add-loader <rev> [--dry-run]
 #
 #   --project ID          /<project>/ folder: [a-z0-9][a-z0-9-]{0,62}
 #   --project-title TEXT  the project's name on the index (default: kept, else the id)
@@ -28,6 +29,13 @@
 #                         without a new revision; needs --reason, and --superseded-by for
 #                         superseded. Kept in /<project>/<rev>/status.json (history newest
 #                         first); the revision page shows "Superseded by <rev>" from it
+#   --add-loader REV      add the review-notes bootstrap (the block cadkit's viewer.html carries)
+#                         before </head> of REV's live index.html and nothing else: read with its
+#                         ETag, VersionId and headers, put back with --if-match and the same
+#                         headers (exit 2 if the page changed in between), then invalidate
+#                         /<project>/<rev>/ and its index.html. Already there = write nothing,
+#                         invalidate only (an interrupted run is rerun). Prints the diff and the
+#                         previous VersionId: rollback = copy that version back + invalidate
 #   --at ISO8601          when the brief or status change happened (default now; with --dir, the
 #                         --date). Orders the "last updated" view
 #   --bucket NAME         default: SSM /platform/3d/bucket
@@ -68,6 +76,12 @@ write_helper() {
                                                change a revision's status (THREED_* env)
     3d-publish.py index root SRC_DIR OUT_JSON  rebuild /index.json from every project
     3d-publish.py page inject IN_HTML OUT_HTML add the status banner (exit 3: unchanged)
+    3d-publish.py page loader IN_HTML OUT_HTML add the review-notes bootstrap before </head> and
+                                               print the diff (exit 3: already there, 2: refused)
+    3d-publish.py object fields RESP_JSON META_JSON
+                                               ETag, VersionId, Cache-Control, Content-Type of a
+                                               get-object response (\x1f separated); user metadata
+                                               to META_JSON
 
 Embedded in 3d-publish.sh (write_helper) so one copy of the script is enough.
 
@@ -589,6 +603,55 @@ def inject_banner(html: str) -> str:
     return html + "\n" + BANNER + "\n" if at == -1 else html[:at] + BANNER + "\n" + html[at:]
 
 
+# ---------------------------------------------------------------------------- review-notes loader
+
+# The guarded bootstrap that loads the review-notes UI on a live revision page: only over https
+# at /<project>/<rev>/ does it append <script src="/_review/notes/v1/loader.js" defer>; file://
+# previews and every other path make no request. Byte-identical to the block cadkit's viewer.html
+# carries (krashidbuilt/cadkit, tests/test_viewer.py REVIEW_LOADER_BLOCK), so a page built by a
+# newer cadkit already has it. This is the only copy in this script.
+LOADER_BLOCK = (
+    '<script id="cadkit-review-loader">(function(){if(location.protocol==="https:"&&'
+    r'/^\/[a-z0-9-]+\/[A-Za-z0-9._-]+\/$/.test(location.pathname))'
+    '{var s=document.createElement("script");s.src="/_review/notes/v1/loader.js";'
+    's.defer=true;document.head.appendChild(s);}})();</script>'
+)
+LOADER_MARKERS = ('id="cadkit-review-loader"', "/_review/notes/v1/loader.js")
+
+
+class LoaderError(Exception):
+    pass
+
+
+def inject_loader(html: str) -> str | None:
+    """The page with LOADER_BLOCK on its own line before </head>; None when it is already there.
+    Refuses a page with a different loader (edited by hand or an older block) or no </head>."""
+    if LOADER_BLOCK in html:
+        return None
+    if any(m in html for m in LOADER_MARKERS):
+        raise LoaderError("the page has a different review-notes loader; not touching it")
+    at = html.lower().find("</head>")
+    if at == -1:
+        raise LoaderError("the page has no </head>")
+    return html[:at] + LOADER_BLOCK + "\n" + html[at:]
+
+
+def loader_diff(old: str, new: str, name: str) -> str:
+    import difflib
+
+    return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
+                                        f"live/{name}", f"new/{name}", n=1))
+
+
+def object_fields(resp_path: str, meta_path: str) -> str:
+    resp = load_json(resp_path)
+    save_json(meta_path, resp.get("Metadata") or {})
+    fields = [resp.get(k) or "" for k in ("ETag", "VersionId", "CacheControl", "ContentType")]
+    if any("\x1f" in f or "\n" in f for f in fields):
+        raise LoaderError("unexpected control character in the object's headers")
+    return "\x1f".join(fields)  # not whitespace: bash `read` keeps an empty field
+
+
 # ---------------------------------------------------------------------------- CLI
 
 
@@ -648,6 +711,19 @@ def main(argv: list[str]) -> int:
         if (group, cmd) == ("index", "root"):
             print("index:", ", ".join(index_root(args[0], args[1])))
             return 0
+        if (group, cmd) == ("page", "loader"):
+            with open(args[0], encoding="utf-8", newline="") as f:
+                html = f.read()
+            out = inject_loader(html)
+            if out is None:
+                return 3  # already there: nothing to upload
+            with open(args[1], "w", encoding="utf-8", newline="") as f:
+                f.write(out)
+            sys.stdout.write(loader_diff(html, out, args[2] if len(args) > 2 else "index.html"))
+            return 0
+        if (group, cmd) == ("object", "fields"):
+            print(object_fields(args[0], args[1]))
+            return 0
         if (group, cmd) == ("page", "inject"):
             with open(args[0], encoding="utf-8") as f:
                 html = f.read()
@@ -661,6 +737,9 @@ def main(argv: list[str]) -> int:
         for err in e.errors:
             print(f"3d-publish: {err}", file=sys.stderr)
         return 2
+    except LoaderError as e:
+        print(f"3d-publish: {e}", file=sys.stderr)
+        return 2
     print(f"3d-publish.py: unknown command {group} {cmd}", file=sys.stderr)
     return 2
 
@@ -671,7 +750,7 @@ PY
 }
 
 usage() {
-	sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 }
 
@@ -688,7 +767,7 @@ if [[ "${1:-}" == "--validate-brief" ]]; then
 fi
 
 project="" project_title="" rev="" title="" dir="" renders="" thumb="" date="" bucket="" dist="" dry=0
-brief="" replace_brief=0 status_rev="" status="" reason="" superseded_by="" at=""
+brief="" replace_brief=0 loader_rev="" status_rev="" status="" reason="" superseded_by="" at=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--project) project="${2:-}"; shift 2 ;;
@@ -701,6 +780,7 @@ while [[ $# -gt 0 ]]; do
 		--date) date="${2:-}"; shift 2 ;;
 		--brief) brief="${2:-}"; shift 2 ;;
 		--replace-brief) replace_brief=1; shift ;;
+		--add-loader) loader_rev="${2:-}"; shift 2 ;;
 		--set-status) status_rev="${2:-}"; status="${3:-}"; shift 3 || shift $# ;;
 		--reason) reason="${2:-}"; shift 2 ;;
 		--superseded-by) superseded_by="${2:-}"; shift 2 ;;
@@ -723,7 +803,14 @@ rev_ok() {
 iso_ok() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9:.]+Z?)?$ ]]; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-if [[ -n "$status_rev" ]]; then
+if [[ -n "$loader_rev" ]]; then
+	mode=loader
+	[[ -z "$dir$brief$renders$thumb$title$date$status_rev$reason$superseded_by$at$project_title" && $replace_brief -eq 0 ]] ||
+		die "--add-loader changes only the revision page; run it on its own"
+	rev_ok "$loader_rev" || die "--add-loader takes a revision id (got '${loader_rev}')"
+	[[ -z "$rev" || "$rev" == "$loader_rev" ]] || die "--rev and --add-loader name different revisions"
+	rev="$loader_rev"
+elif [[ -n "$status_rev" ]]; then
 	mode=status
 	[[ -z "$dir$brief$renders$thumb$title$date" ]] || die "--set-status changes only the status; run it on its own"
 	rev_ok "$status_rev" || die "--set-status takes a revision id (got '${status_rev}')"
@@ -734,7 +821,7 @@ elif [[ -n "$dir" ]]; then
 	mode=publish
 else
 	mode=brief
-	[[ -n "$brief" ]] || die "nothing to do: give --dir (publish), --brief (attach a brief) or --set-status"
+	[[ -n "$brief" ]] || die "nothing to do: give --dir (publish), --brief (attach a brief), --set-status or --add-loader"
 	[[ -z "$renders$thumb$title$date" ]] || die "--renders/--thumb/--title/--date need --dir (a publish)"
 fi
 [[ "$mode" == status || -z "$reason$superseded_by" ]] || die "--reason and --superseded-by go with --set-status"
@@ -792,6 +879,46 @@ read_optional() {
 	grep -qE '\(404\)|NoSuchKey|does not exist|Not Found' "$work/read.err" && return 1
 	die "cannot read ${base}/$1: $(cat "$work/read.err")"
 }
+
+# --add-loader: the revision page, and nothing else. One get-object gives the body and the ETag,
+# VersionId and headers of that same version; the put is conditional on that ETag.
+if [[ "$mode" == loader ]]; then
+	key="${prefix}/index.html"
+	if ! aws s3api get-object --bucket "$bucket" --key "$key" "$work/live.html" >"$work/live.json" 2>"$work/read.err"; then
+		grep -qE '\(404\)|NoSuchKey|does not exist|Not Found' "$work/read.err" &&
+			die "s3://${bucket}/${key} does not exist; publish the revision first"
+		die "cannot read s3://${bucket}/${key}: $(cat "$work/read.err")"
+	fi
+	IFS=$'\x1f' read -r etag version cache_control content_type < <(python3 -I "$helper" object fields "$work/live.json" "$work/live.meta.json") ||
+		die "cannot read the headers of s3://${bucket}/${key}"
+	[[ -n "$etag" ]] || die "s3://${bucket}/${key} came back without an ETag"
+	[[ -n "$version" && "$version" != "null" ]] ||
+		die "s3://${bucket}/${key} has no VersionId (bucket versioning off?): no rollback handle, refusing"
+	loader_paths=("/${prefix}/" "/${prefix}/index.html")
+	rc=0
+	python3 -I "$helper" page loader "$work/live.html" "$work/page.html" "$key" || rc=$?
+	if [[ $rc -eq 3 ]]; then
+		echo "the loader is already on s3://${bucket}/${key} (VersionId ${version}): nothing written, invalidating only"
+	elif [[ $rc -eq 0 ]]; then
+		put=(aws s3api put-object --bucket "$bucket" --key "$key" --body "$work/page.html" --if-match "$etag"
+			--cache-control "${cache_control:-no-cache}" --content-type "${content_type:-text/html; charset=utf-8}")
+		[[ "$(cat "$work/live.meta.json")" == "{}" ]] || put+=(--metadata "file://$work/live.meta.json")
+		if ! run "${put[@]}" --query VersionId --output text >"$work/put.out" 2>"$work/put.err"; then
+			grep -qE 'PreconditionFailed|\(412\)|ConditionalRequestConflict|\(409\)' "$work/put.err" &&
+				die "s3://${bucket}/${key} changed since it was read (ETag ${etag}); nothing written, rerun"
+			die "cannot write s3://${bucket}/${key}: $(cat "$work/put.err")"
+		fi
+		cat "$work/put.out"
+		echo "previous VersionId: ${version}"
+		echo "rollback: aws s3api copy-object --bucket ${bucket} --key ${key} --copy-source '${bucket}/${key}?versionId=${version}' --metadata-directive COPY && aws cloudfront create-invalidation --distribution-id ${dist} --paths ${loader_paths[*]}"
+	else
+		exit 2
+	fi
+	run aws cloudfront create-invalidation --distribution-id "$dist" --paths "${loader_paths[@]}" \
+		--query Invalidation.Id --output text
+	echo "https://${bucket}/${prefix}/"
+	exit 0
+fi
 
 # The renders' file names, thumbnail first, for the index page's carousel.
 render_names=""

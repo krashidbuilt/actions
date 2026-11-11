@@ -279,6 +279,25 @@ banner). `index.json`, `brief.json` and `status.json` can never be revision ids.
 helper is embedded in the script, so a single copied file (`git show
 origin/develop:scripts/3d-publish.sh > /tmp/3d-publish.sh`) still runs.
 
+**The review-notes loader on live pages.** cadkit's `viewer.html` carries a guarded bootstrap
+that, only over https at `/<project>/<rev>/`, loads `/_review/notes/v1/loader.js` (`file://`
+previews and every other path make no request). Revisions published before that cadkit get it
+with `--add-loader <rev>`, a mode of its own (refused with any other mode or publish flag):
+
+```sh
+scripts/3d-publish.sh --project passport --add-loader 16cd948-book-mjf-shifter [--dry-run]
+```
+
+It reads `/<project>/<rev>/index.html` with one `get-object` (body, ETag, `VersionId`, headers),
+inserts the exact block cadkit carries on its own line before `</head>`, and puts the page back
+with `--if-match <etag>` and the same `Cache-Control`, `Content-Type` and user metadata; a page
+that changed in between is refused (exit 2, nothing written). Then it invalidates exactly
+`/<project>/<rev>/` and `/<project>/<rev>/index.html`. A page that already has the block
+(rerun, or built by the new cadkit) is not written; the invalidation runs again, so an
+interrupted run is rerun, not refused. It writes no index, status, brief or sidecar. It prints
+the one-block diff and the previous `VersionId`, with the rollback command (copy that version
+back with `--metadata-directive COPY`, then the same invalidation). The bucket must be versioned.
+
 **Index contract.** `/index.json` is `{"projects":[{"id","title","revisions":[{"rev","date","title","path":"/<p>/<rev>/","thumb":"/<p>/<rev>/renders/<png>"|null}]}]}`.
 Revisions are newest first by `date`, and `/<project>/index.json` is one element of `projects`.
 The brief and status fields above are optional additions; readers ignore what they don't know.
