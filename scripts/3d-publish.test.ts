@@ -247,6 +247,59 @@ describe("brief parser", () => {
       "outside 'numbers:' or 'links:'",
     ],
     ["inline list value", BRIEF.replace("numbers:", "numbers: 3"), "takes '  - label: value' items"],
+    [
+      "link path with ..",
+      BRIEF.replace("https://git.example.com/o/r/pulls/20", "/passport/../x/"),
+      "line 11: a link path is",
+    ],
+    [
+      "link path with //",
+      BRIEF.replace("https://git.example.com/o/r/pulls/20", "/passport//x/"),
+      "line 11: a link path is",
+    ],
+    [
+      "3D review host in links",
+      BRIEF.replace("https://git.example.com/o/r/pulls/20", "https://3d.krashidbuilt.com/passport/aaa1111/"),
+      "line 11: https://3d.krashidbuilt.com/passport/aaa1111/ is on the staff host 3d.krashidbuilt.com, which clients must never see; link the page by its path instead: /passport/aaa1111/",
+    ],
+    [
+      "another krashidbuilt host in links",
+      BRIEF.replace("https://git.example.com/o/r/pulls/20", "https://design.krashidbuilt.com/x"),
+      "line 11: https://design.krashidbuilt.com/x shows the internal host design.krashidbuilt.com to clients",
+    ],
+    [
+      "krashidbuilt host in a link label",
+      BRIEF.replace("PR #20:", "git.dsm.krashidbuilt.com PR:"),
+      "line 11: link label: 'git.dsm.krashidbuilt.com' is visible text",
+    ],
+    [
+      "bare krashidbuilt URL in the body",
+      BRIEF.replace("- The cover is thinner.", "- See https://3d.krashidbuilt.com/passport/aaa1111/ for the old one."),
+      "line 19: '3d.krashidbuilt.com' is visible text, and clients must never see a krashidbuilt.com address",
+    ],
+    [
+      "krashidbuilt URL as a markdown link label",
+      BRIEF.replace("[README](https://git.example.com/x)", "[git.dsm.krashidbuilt.com/o/r](https://git.example.com/x)"),
+      "line 24: 'git.dsm.krashidbuilt.com' is visible text",
+    ],
+    [
+      "krashidbuilt URL in a code span",
+      BRIEF.replace("`face keys`", "`https://git.dsm.krashidbuilt.com/o/r`"),
+      "line 28: 'git.dsm.krashidbuilt.com' is visible text",
+    ],
+    [
+      "3D review host as a markdown link target",
+      BRIEF.replace(
+        "[README](https://git.example.com/x)",
+        "[the old one](https://3d.krashidbuilt.com/passport/aaa1111/)",
+      ),
+      "line 24: link target: https://3d.krashidbuilt.com/passport/aaa1111/ is on the staff host 3d.krashidbuilt.com, which clients must never see; link the page by its path instead: /passport/aaa1111/",
+    ],
+    [
+      "krashidbuilt host in the summary",
+      BRIEF.replace(/^summary:.*$/m, "summary: Compare with 3d.krashidbuilt.com/passport/aaa1111/"),
+      "'summary': '3d.krashidbuilt.com' is visible text",
+    ],
     ["missing section", BRIEF.replace("## Limitations", "## Caveats"), "missing section '## Limitations'"],
     [
       "empty section",
@@ -260,6 +313,40 @@ describe("brief parser", () => {
     const r = py(["brief", "validate", briefFile("bad.md", text)]);
     expect(r.status).toBe(1);
     expect(r.stdout).toContain(message);
+  });
+
+  test("links take a same-site path, a staff-only host and an external URL", () => {
+    const text = BRIEF.replace(
+      "links:\n",
+      "links:\n  - Previous: /passport/aaa1111/\n  - Gitea: https://git.dsm.krashidbuilt.com/o/r/pulls/7\n" +
+        "  - Datasheet: https://www.example.org/switch.pdf\n",
+    ).replace(
+      "- The cover is thinner.",
+      "- The cover is thinner than [the last one](/passport/aaa1111/), see [PR 7](https://git.dsm.krashidbuilt.com/o/r/pulls/7).",
+    );
+    const out = join(tmp, "brief.json");
+    const r = py(
+      ["brief", "build", briefFile("ok.md", text), "--project", "passport", "--rev", "bbb2222"].concat([
+        "--at",
+        "2026-11-05T10:00:00Z",
+        "--out",
+        out,
+      ]),
+    );
+    expect(r.stdout + r.stderr).not.toContain("error");
+    expect(r.status).toBe(0);
+    expect(JSON.parse(readFileSync(out, "utf-8")).links.slice(0, 3)).toEqual([
+      { label: "Previous", url: "/passport/aaa1111/" },
+      { label: "Gitea", url: "https://git.dsm.krashidbuilt.com/o/r/pulls/7" },
+      { label: "Datasheet", url: "https://www.example.org/switch.pdf" },
+    ]);
+  });
+
+  test("a fenced code block is visible text, link and all", () => {
+    const text = BRIEF.replace("| a | b |", "```\n[x](https://git.dsm.krashidbuilt.com/o/r)\n```\n\n| a | b |");
+    const r = py(["brief", "validate", briefFile("fence.md", text)]);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("line 35: 'git.dsm.krashidbuilt.com' is visible text");
   });
 
   test("validate reports every file and fails when any is bad", () => {

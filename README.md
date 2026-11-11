@@ -253,7 +253,14 @@ AWS_PROFILE=krashidbuilt scripts/3d-publish.sh --project passport --project-titl
 **Briefs and status.** A revision can carry a brief: a markdown file with a small front matter
 (title, one-line summary, `status`, optional `status_reason`, `parent`, `superseded_by`,
 `numbers` and `links`) and the sections `## What changed`, `## Limitations` and
-`## Recommendation`. `--brief` (workflow input `brief`) validates it before anything is uploaded
+`## Recommendation`. A `links` entry is `- <label>: <http(s) url>` or `- <label>: /<project>/<rev>/`.
+Clients read briefs on white-label hosts that serve the same paths, so a brief never shows a
+krashidbuilt.com address: link a page of the 3D site by its path (`/<project>/<rev>/`, also as a
+markdown link target), never `https://3d.krashidbuilt.com/...`. The check refuses a 3D-host URL
+in `links` or as a link target, a link to any other krashidbuilt.com host except
+`git.dsm.krashidbuilt.com` (the viewer hides that one from clients), and a krashidbuilt.com host
+in visible text (a bare URL, a link label, a code span, the title or summary), naming the line.
+`--brief` (workflow input `brief`) validates it before anything is uploaded
 and publishes `/<project>/<rev>/brief.json` + `brief.md`. The brief is fixed with the revision;
 its status is not. `/<project>/<rev>/status.json` holds the current status (`concept`, `checked`,
 `recommended`, `superseded`, `signed-off`), dated and with a reason, and the history newest
