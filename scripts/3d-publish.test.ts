@@ -832,6 +832,12 @@ process.stdout.write(JSON.stringify(appended));`;
     expect(puts()[0]).not.toContain("--metadata");
   });
 
+  test("an absent Cache-Control does not shift the Content-Type into its place", () => {
+    live(PAGE, { contentType: "text/html" });
+    expect(addLoader().status).toBe(0);
+    expect(meta(KEY)).toMatchObject({ cacheControl: "no-cache", contentType: "text/html" });
+  });
+
   test("refuses other modes, a missing page and a foreign loader without writing", () => {
     live();
     const before = snapshot();

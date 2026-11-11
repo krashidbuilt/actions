@@ -80,7 +80,7 @@ write_helper() {
                                                print the diff (exit 3: already there, 2: refused)
     3d-publish.py object fields RESP_JSON META_JSON
                                                ETag, VersionId, Cache-Control, Content-Type of a
-                                               get-object response (tab separated); user metadata
+                                               get-object response (\x1f separated); user metadata
                                                to META_JSON
 
 Embedded in 3d-publish.sh (write_helper) so one copy of the script is enough.
@@ -647,9 +647,9 @@ def object_fields(resp_path: str, meta_path: str) -> str:
     resp = load_json(resp_path)
     save_json(meta_path, resp.get("Metadata") or {})
     fields = [resp.get(k) or "" for k in ("ETag", "VersionId", "CacheControl", "ContentType")]
-    if any("\t" in f or "\n" in f for f in fields):
-        raise LoaderError("unexpected tab or newline in the object's headers")
-    return "\t".join(fields)
+    if any("\x1f" in f or "\n" in f for f in fields):
+        raise LoaderError("unexpected control character in the object's headers")
+    return "\x1f".join(fields)  # not whitespace: bash `read` keeps an empty field
 
 
 # ---------------------------------------------------------------------------- CLI
@@ -889,7 +889,7 @@ if [[ "$mode" == loader ]]; then
 			die "s3://${bucket}/${key} does not exist; publish the revision first"
 		die "cannot read s3://${bucket}/${key}: $(cat "$work/read.err")"
 	fi
-	IFS=$'\t' read -r etag version cache_control content_type < <(python3 -I "$helper" object fields "$work/live.json" "$work/live.meta.json") ||
+	IFS=$'\x1f' read -r etag version cache_control content_type < <(python3 -I "$helper" object fields "$work/live.json" "$work/live.meta.json") ||
 		die "cannot read the headers of s3://${bucket}/${key}"
 	[[ -n "$etag" ]] || die "s3://${bucket}/${key} came back without an ETag"
 	[[ -n "$version" && "$version" != "null" ]] ||
