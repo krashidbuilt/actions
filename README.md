@@ -305,6 +305,21 @@ interrupted run is rerun, not refused. It writes no index, status, brief or side
 the one-block diff and the previous `VersionId`, with the rollback command (copy that version
 back with `--metadata-directive COPY`, then the same invalidation). The bucket must be versioned.
 
+**Tool naming in old page heads.** Pages built before krashidbuilt/cadkit#10 carry two `<head>`
+lines that name a tool on white-label client hosts: `<meta name="claude:viewport-fit-sides"
+content="cover">` and `<meta name="generator" content="cadkit viewer">`. `--strip-head-meta <rev>`
+deletes exactly those whole lines and nothing else, with the same read, `--if-match` put, headers,
+invalidation, printed diff and rollback command as `--add-loader`:
+
+```sh
+scripts/3d-publish.sh --project passport --strip-head-meta 16cd948-book-mjf-shifter [--dry-run]
+```
+
+A page with neither line is not written (it says so; the invalidation runs again). A variant
+(another generator, another `claude:` meta, two on one line, one running into `</head>`), a page
+without `</head>`, or a result that differs from the live page by anything but deleted copies of
+those two lines is refused (exit 2, nothing written). Text in the body is never touched.
+
 **Index contract.** `/index.json` is `{"projects":[{"id","title","revisions":[{"rev","date","title","path":"/<p>/<rev>/","thumb":"/<p>/<rev>/renders/<png>"|null}]}]}`.
 Revisions are newest first by `date`, and `/<project>/index.json` is one element of `projects`.
 The brief and status fields above are optional additions; readers ignore what they don't know.

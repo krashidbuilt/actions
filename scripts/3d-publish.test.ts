@@ -960,3 +960,146 @@ process.stdout.write(JSON.stringify(appended));`;
     expect(r.stdout).toContain("dry-run: aws s3api put-object");
   });
 });
+
+describe("--strip-head-meta", () => {
+  // The two head lines cadkit's viewer.html carried before krashidbuilt/cadkit#10.
+  const HINT = '<meta name="claude:viewport-fit-sides" content="cover">';
+  const GEN = '<meta name="generator" content="cadkit viewer">';
+  const KEY = "passport/r1/index.html";
+  const CLEAN =
+    '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n<title>T</title>\n<style>\nbody{margin:0}\n</style>\n<script id="cadkit-review-loader">x()</script>\n</head>\n<body>\n<canvas></canvas>\n</body>\n</html>\n';
+  const PAGE = CLEAN.replace("<title>", `${HINT}\n${GEN}\n<title>`);
+  const HEADERS = { cacheControl: "no-cache", contentType: "text/html; charset=utf-8", metadata: { origin: "cadkit" } };
+
+  const live = (page = PAGE, headers: object = HEADERS) => {
+    for (const [key, body] of [
+      [KEY, page],
+      ["passport/r1/face.json", "{}"],
+      ["passport/r1/status.json", "{}"],
+      ["passport/r1/brief.json", "{}"],
+      ["passport/r1/renders/iso.png", "png"],
+      ["passport/index.json", '{"id":"passport","revisions":[{"rev":"r1"}]}'],
+      ["index.json", "{}"],
+    ]) {
+      mkdirSync(join(s3, key, ".."), { recursive: true });
+      writeFileSync(join(s3, key), body);
+    }
+    mkdirSync(join(tmp, "meta", "passport", "r1"), { recursive: true });
+    writeFileSync(join(tmp, "meta", `${KEY}.meta.json`), JSON.stringify({ ...headers, versionId: "VOLD1" }));
+  };
+  const strip = (extra: string[] = [], envExtra: NodeJS.ProcessEnv = {}) =>
+    sh(["--project", "passport", "--strip-head-meta", "r1", ...extra], envExtra);
+  const puts = () => calls().filter((c) => c[0] === "s3api" && c[1] === "put-object");
+  const helper = (page: string) => {
+    const src = join(tmp, "in.html");
+    const out = join(tmp, "out.html");
+    rmSync(out, { force: true });
+    writeFileSync(src, page);
+    const r = py(["page", "strip-meta", src, out, KEY]);
+    return { ...r, out: existsSync(out) ? readFileSync(out, "utf-8") : null };
+  };
+
+  test("deletes exactly the two lines and prints a two-line diff", () => {
+    const r = helper(PAGE);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).toBe(CLEAN);
+    expect(r.stdout).toBe(
+      `--- live/${KEY}\n+++ new/${KEY}\n@@ -5,4 +5,2 @@\n <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n-${HINT}\n-${GEN}\n <title>T</title>\n`,
+    );
+    // Either line on its own, and CRLF line ends, are stripped the same way.
+    expect(helper(CLEAN.replace("<title>", `${GEN}\n<title>`)).out).toBe(CLEAN);
+    expect(helper(CLEAN.replace("<title>", `${HINT}\n<title>`)).out).toBe(CLEAN);
+    const crlf = (s: string) => s.replace(/\n/g, "\r\n");
+    expect(helper(crlf(PAGE)).out).toBe(crlf(CLEAN));
+  });
+
+  test("a clean page is a no-op (exit 3); variants and pages without </head> are refused", () => {
+    expect(helper(CLEAN)).toMatchObject({ status: 3, out: null });
+    for (const page of [
+      CLEAN.replace("<title>", '<meta name="generator" content="something else">\n<title>'),
+      CLEAN.replace("<title>", '<meta name="claude:other" content="x">\n<title>'),
+      CLEAN.replace("<title>", `${HINT}${GEN}\n<title>`), // two on one line
+      CLEAN.replace("<title>", `  ${HINT}\n<title>`), // indented: not the exact line
+      PAGE.replace("</head>", `${HINT}</head>`), // runs into </head>
+      `${HINT}\n<body>no head</body>`,
+    ]) {
+      expect(helper(page), page).toMatchObject({ status: 2, out: null });
+    }
+    // Only the head counts: the same text in the body is content, left alone.
+    const body = PAGE.replace("<canvas>", `<pre>${GEN}</pre>\n<canvas>`);
+    expect(helper(body).out).toBe(CLEAN.replace("<canvas>", `<pre>${GEN}</pre>\n<canvas>`));
+  });
+
+  test("writes only the page, with the same headers and ETag condition, and invalidates two paths", () => {
+    live();
+    const before = snapshot();
+    const r = strip();
+    expect(r.status, r.stderr).toBe(0);
+    expect(changed(before, snapshot())).toEqual([KEY]);
+    expect(obj(KEY)).toBe(CLEAN);
+    expect(meta(KEY)).toMatchObject(HEADERS);
+    expect(puts()).toHaveLength(1);
+    const put = puts()[0];
+    expect(put[put.indexOf("--if-match") + 1]).toBe(`"${createHash("md5").update(PAGE).digest("hex")}"`);
+    expect(writes()).toHaveLength(1); // the invalidation; no s3 cp/sync
+    expect(invalidated()).toEqual(["/passport/r1/", "/passport/r1/index.html"]);
+    expect(r.stdout).toContain(`-${HINT}`);
+    expect(r.stdout).toContain("previous VersionId: VOLD1");
+    expect(r.stdout).toContain("--copy-source '3d.example.com/passport/r1/index.html?versionId=VOLD1'");
+  });
+
+  test("a rerun writes nothing, says so, and invalidates the same two paths", () => {
+    live();
+    expect(strip().status).toBe(0);
+    const after = snapshot();
+    writeFileSync(join(tmp, "aws.log"), "");
+    const r = strip();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain("neither meta line is on");
+    expect(changed(after, snapshot())).toEqual([]);
+    expect(puts()).toHaveLength(0);
+    expect(invalidated()).toEqual(["/passport/r1/", "/passport/r1/index.html"]);
+  });
+
+  test("a page changed between read and write is refused: nothing written or invalidated", () => {
+    live();
+    const r = strip([], { FAKE_AWS_CHANGE_AFTER_GET: "1" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("changed since it was read");
+    expect(obj(KEY)).toBe(`${PAGE}<!-- changed -->`);
+    expect(invalidated()).toEqual([]);
+  });
+
+  test("refuses other modes, --add-loader with it, a missing page and a variant without writing", () => {
+    live();
+    for (const extra of [
+      ["--set-status", "r1", "checked", "--reason", "x"],
+      ["--brief", briefFile("b.md")],
+      ["--dir", viewer("v")],
+      ["--rev", "r2"],
+      ["--add-loader", "r1"],
+    ]) {
+      expect(strip(extra).status, extra.join(" ")).toBe(2);
+    }
+    expect(sh(["--project", "passport", "--strip-head-meta", "../x"]).status).toBe(2);
+    expect(calls()).toEqual([]);
+    expect(sh(["--project", "passport", "--strip-head-meta", "nope"]).stderr).toContain("does not exist");
+    writeFileSync(join(s3, KEY), PAGE.replace(GEN, '<meta name="generator" content="other">'));
+    const variant = snapshot();
+    expect(strip().status).toBe(2);
+    expect(changed(variant, snapshot())).toEqual([]);
+    expect(puts()).toHaveLength(0);
+    expect(invalidated()).toEqual([]);
+  });
+
+  test("--dry-run writes nothing", () => {
+    live();
+    const before = snapshot();
+    const r = strip(["--dry-run"]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(changed(before, snapshot())).toEqual([]);
+    expect(puts()).toHaveLength(0);
+    expect(r.stdout).toContain("dry-run: aws s3api put-object");
+    expect(r.stdout).toContain(`-${GEN}`);
+  });
+});
