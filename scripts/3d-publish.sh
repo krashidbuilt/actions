@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Publish one CAD project revision to https://3d.krashidbuilt.com, attach its brief, change
-# its status, or add the review-notes loader to a live revision page.
+# its status, add the review-notes loader to a live revision page, or strip tool naming from its
+# <head>.
 #
 #   scripts/3d-publish.sh --project passport --project-title "Passport enclosure" \
 #     --rev "$(git rev-parse --short HEAD)" --title "Passport enclosure v0 (454261 cell)" \
@@ -11,6 +12,7 @@
 #   scripts/3d-publish.sh --project passport --set-status <rev> superseded --superseded-by <rev2> \
 #     --reason "replaced by the controls v3 set" [--at ISO]
 #   scripts/3d-publish.sh --project passport --add-loader <rev> [--dry-run]
+#   scripts/3d-publish.sh --project passport --strip-head-meta <rev> [--dry-run]
 #
 #   --project ID          /<project>/ folder: [a-z0-9][a-z0-9-]{0,62}
 #   --project-title TEXT  the project's name on the index (default: kept, else the id)
@@ -36,6 +38,11 @@
 #                         /<project>/<rev>/ and its index.html. Already there = write nothing,
 #                         invalidate only (an interrupted run is rerun). Prints the diff and the
 #                         previous VersionId: rollback = copy that version back + invalidate
+#   --strip-head-meta REV delete the two head lines older cadkit pages carry (the
+#                         claude:viewport-fit-sides hint and the generator meta) from REV's live
+#                         index.html and nothing else; the same read, conditional put, invalidation
+#                         and rollback as --add-loader. Neither line there = write nothing. Any
+#                         other difference, or a variant of either meta, is refused (exit 2)
 #   --at ISO8601          when the brief or status change happened (default now; with --dir, the
 #                         --date). Orders the "last updated" view
 #   --bucket NAME         default: SSM /platform/3d/bucket
@@ -84,6 +91,9 @@ write_helper() {
     3d-publish.py page inject IN_HTML OUT_HTML add the status banner (exit 3: unchanged)
     3d-publish.py page loader IN_HTML OUT_HTML add the review-notes bootstrap before </head> and
                                                print the diff (exit 3: already there, 2: refused)
+    3d-publish.py page strip-meta IN_HTML OUT_HTML
+                                               delete STRIP_LINES from <head> and print the diff
+                                               (exit 3: neither there, 2: refused)
     3d-publish.py object fields RESP_JSON META_JSON
                                                ETag, VersionId, Cache-Control, Content-Type of a
                                                get-object response (\x1f separated); user metadata
@@ -751,6 +761,49 @@ def loader_diff(old: str, new: str, name: str) -> str:
                                         f"live/{name}", f"new/{name}", n=1))
 
 
+# ---------------------------------------------------------------------------- head meta strip
+
+# The two <head> lines cadkit's viewer.html carried before krashidbuilt/cadkit#10: a viewport hint
+# for another host's viewer and a generator meta naming the tool. Revision pages are served on
+# white-label client hosts, so --strip-head-meta deletes exactly these lines and nothing else.
+STRIP_LINES = (
+    '<meta name="claude:viewport-fit-sides" content="cover">',
+    '<meta name="generator" content="cadkit viewer">',
+)
+STRIP_MARKERS = ("claude:", 'name="generator"')
+
+
+def strip_head_meta(html: str) -> str | None:
+    """The page without STRIP_LINES in its <head>; None when neither is there. Refuses a page with
+    no </head> or a variant of either meta (another content, two on one line) left after the strip."""
+    at = html.lower().find("</head>")
+    if at == -1:
+        raise LoaderError("the page has no </head>")
+    head = html[:at].splitlines(True)
+    # The last line may run into </head> (no newline): it is kept whole, never stripped.
+    kept = [ln for ln in head if not (ln.endswith("\n") and ln.rstrip("\r\n") in STRIP_LINES)]
+    if any(m in ln for ln in kept for m in STRIP_MARKERS):
+        raise LoaderError("the head has a claude: or generator meta this mode does not know; not touching it")
+    if len(kept) == len(head):
+        return None
+    out = "".join(kept) + html[at:]
+    check_only_stripped(html, out)
+    return out
+
+
+def check_only_stripped(old: str, new: str) -> None:
+    """Refuse unless NEW is OLD with whole STRIP_LINES lines deleted and every other byte equal:
+    every opcode is an equal run (byte-equal lines) or a delete of STRIP_LINES lines only."""
+    import difflib
+
+    a, b = old.splitlines(True), new.splitlines(True)
+    for op, i1, i2, _j1, _j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        if op != "delete" or any(ln.rstrip("\r\n") not in STRIP_LINES for ln in a[i1:i2]):
+            raise LoaderError("the stripped page differs by more than the two meta lines; refusing")
+
+
 def object_fields(resp_path: str, meta_path: str) -> str:
     resp = load_json(resp_path)
     save_json(meta_path, resp.get("Metadata") or {})
@@ -829,6 +882,16 @@ def main(argv: list[str]) -> int:
                 f.write(out)
             sys.stdout.write(loader_diff(html, out, args[2] if len(args) > 2 else "index.html"))
             return 0
+        if (group, cmd) == ("page", "strip-meta"):
+            with open(args[0], encoding="utf-8", newline="") as f:
+                html = f.read()
+            out = strip_head_meta(html)
+            if out is None:
+                return 3  # neither line there: nothing to upload
+            with open(args[1], "w", encoding="utf-8", newline="") as f:
+                f.write(out)
+            sys.stdout.write(loader_diff(html, out, args[2] if len(args) > 2 else "index.html"))
+            return 0
         if (group, cmd) == ("object", "fields"):
             print(object_fields(args[0], args[1]))
             return 0
@@ -858,7 +921,7 @@ PY
 }
 
 usage() {
-	sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,66p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 }
 
@@ -875,7 +938,7 @@ if [[ "${1:-}" == "--validate-brief" ]]; then
 fi
 
 project="" project_title="" rev="" title="" dir="" renders="" thumb="" date="" bucket="" dist="" dry=0
-brief="" replace_brief=0 loader_rev="" status_rev="" status="" reason="" superseded_by="" at=""
+brief="" replace_brief=0 loader_rev="" strip_rev="" status_rev="" status="" reason="" superseded_by="" at=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--project) project="${2:-}"; shift 2 ;;
@@ -889,6 +952,7 @@ while [[ $# -gt 0 ]]; do
 		--brief) brief="${2:-}"; shift 2 ;;
 		--replace-brief) replace_brief=1; shift ;;
 		--add-loader) loader_rev="${2:-}"; shift 2 ;;
+		--strip-head-meta) strip_rev="${2:-}"; shift 2 ;;
 		--set-status) status_rev="${2:-}"; status="${3:-}"; shift 3 || shift $# ;;
 		--reason) reason="${2:-}"; shift 2 ;;
 		--superseded-by) superseded_by="${2:-}"; shift 2 ;;
@@ -911,13 +975,20 @@ rev_ok() {
 iso_ok() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9:.]+Z?)?$ ]]; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-if [[ -n "$loader_rev" ]]; then
-	mode=loader
+# --add-loader and --strip-head-meta edit only the live revision page: one helper command each.
+page_flag="" page_rev="" page_cmd=""
+[[ -z "$loader_rev" ]] || { page_flag=--add-loader page_rev="$loader_rev" page_cmd=loader; }
+if [[ -n "$strip_rev" ]]; then
+	[[ -z "$page_flag" ]] || die "--add-loader and --strip-head-meta are separate runs"
+	page_flag=--strip-head-meta page_rev="$strip_rev" page_cmd=strip-meta
+fi
+if [[ -n "$page_flag" ]]; then
+	mode=page
 	[[ -z "$dir$brief$renders$thumb$title$date$status_rev$reason$superseded_by$at$project_title" && $replace_brief -eq 0 ]] ||
-		die "--add-loader changes only the revision page; run it on its own"
-	rev_ok "$loader_rev" || die "--add-loader takes a revision id (got '${loader_rev}')"
-	[[ -z "$rev" || "$rev" == "$loader_rev" ]] || die "--rev and --add-loader name different revisions"
-	rev="$loader_rev"
+		die "${page_flag} changes only the revision page; run it on its own"
+	rev_ok "$page_rev" || die "${page_flag} takes a revision id (got '${page_rev}')"
+	[[ -z "$rev" || "$rev" == "$page_rev" ]] || die "--rev and ${page_flag} name different revisions"
+	rev="$page_rev"
 elif [[ -n "$status_rev" ]]; then
 	mode=status
 	[[ -z "$dir$brief$renders$thumb$title$date" ]] || die "--set-status changes only the status; run it on its own"
@@ -929,7 +1000,7 @@ elif [[ -n "$dir" ]]; then
 	mode=publish
 else
 	mode=brief
-	[[ -n "$brief" ]] || die "nothing to do: give --dir (publish), --brief (attach a brief), --set-status or --add-loader"
+	[[ -n "$brief" ]] || die "nothing to do: give --dir (publish), --brief (attach a brief), --set-status, --add-loader or --strip-head-meta"
 	[[ -z "$renders$thumb$title$date" ]] || die "--renders/--thumb/--title/--date need --dir (a publish)"
 fi
 [[ "$mode" == status || -z "$reason$superseded_by" ]] || die "--reason and --superseded-by go with --set-status"
@@ -988,9 +1059,9 @@ read_optional() {
 	die "cannot read ${base}/$1: $(cat "$work/read.err")"
 }
 
-# --add-loader: the revision page, and nothing else. One get-object gives the body and the ETag,
-# VersionId and headers of that same version; the put is conditional on that ETag.
-if [[ "$mode" == loader ]]; then
+# --add-loader / --strip-head-meta: the revision page, and nothing else. One get-object gives the
+# body and the ETag, VersionId and headers of that same version; the put is conditional on that ETag.
+if [[ "$mode" == page ]]; then
 	key="${prefix}/index.html"
 	if ! aws s3api get-object --bucket "$bucket" --key "$key" "$work/live.html" >"$work/live.json" 2>"$work/read.err"; then
 		grep -qE '\(404\)|NoSuchKey|does not exist|Not Found' "$work/read.err" &&
@@ -1004,9 +1075,11 @@ if [[ "$mode" == loader ]]; then
 		die "s3://${bucket}/${key} has no VersionId (bucket versioning off?): no rollback handle, refusing"
 	loader_paths=("/${prefix}/" "/${prefix}/index.html")
 	rc=0
-	python3 -I "$helper" page loader "$work/live.html" "$work/page.html" "$key" || rc=$?
-	if [[ $rc -eq 3 ]]; then
+	python3 -I "$helper" page "$page_cmd" "$work/live.html" "$work/page.html" "$key" || rc=$?
+	if [[ $rc -eq 3 && "$page_cmd" == loader ]]; then
 		echo "the loader is already on s3://${bucket}/${key} (VersionId ${version}): nothing written, invalidating only"
+	elif [[ $rc -eq 3 ]]; then
+		echo "neither meta line is on s3://${bucket}/${key} (VersionId ${version}): nothing written, invalidating only"
 	elif [[ $rc -eq 0 ]]; then
 		put=(aws s3api put-object --bucket "$bucket" --key "$key" --body "$work/page.html" --if-match "$etag"
 			--cache-control "${cache_control:-no-cache}" --content-type "${content_type:-text/html; charset=utf-8}")
